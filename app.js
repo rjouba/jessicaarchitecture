@@ -31,18 +31,67 @@ let SYNC_INITIALIZED = false;
 let LAST_SYNC_STATUS = 'جارِ التحقق من الاتصال بالسحابة...';
 
 function ensureFirebaseScriptsLoaded(onDone) {
-    if (typeof firebase !== 'undefined') { onDone(); return; }
-    const appScript = document.createElement('script');
-    appScript.src = 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.min.js';
-    appScript.onload = () => {
-        const fsScript = document.createElement('script');
-        fsScript.src = 'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.min.js';
-        fsScript.onload = onDone;
-        fsScript.onerror = () => onDone();
-        document.head.appendChild(fsScript);
-    };
-    appScript.onerror = () => onDone();
-    document.head.appendChild(appScript);
+    if (typeof firebase !== 'undefined' && firebase.firestore) { onDone(); return; }
+    const fbApp = document.querySelector('script[src*="firebase-app-compat"]');
+    const fbFs = document.querySelector('script[src*="firebase-firestore-compat"]');
+    if (fbApp && fbFs) {
+        let checks = 0;
+        const iv = setInterval(() => {
+            checks++;
+            if (typeof firebase !== 'undefined' && firebase.firestore) {
+                clearInterval(iv); onDone(); return;
+            }
+            if (checks > 40) { clearInterval(iv); loadDynamically(onDone); return; }
+        }, 250);
+        return;
+    }
+    loadDynamically(onDone);
+    function loadDynamically(cb) {
+        const s1 = document.createElement('script');
+        s1.src = 'https://unpkg.com/firebase@10.13.0/firebase-app-compat.min.js';
+        s1.crossOrigin = 'anonymous';
+        s1.referrerPolicy = 'no-referrer-when-downgrade';
+        s1.onload = () => {
+            const s2 = document.createElement('script');
+            s2.src = 'https://unpkg.com/firebase@10.13.0/firebase-firestore-compat.min.js';
+            s2.crossOrigin = 'anonymous';
+            s2.referrerPolicy = 'no-referrer-when-downgrade';
+            s2.onload = cb;
+            s2.onerror = () => setTimeout(() => loadAlt(cb), 100);
+            document.head.appendChild(s2);
+        };
+        s1.onerror = () => setTimeout(() => loadAlt(cb), 100);
+        document.head.appendChild(s1);
+    }
+    function loadAlt(cb) {
+        const fallbackList = [
+            [
+                'https://cdn.jsdelivr.net/npm/firebase@10.13.0/firebase-app-compat.min.js',
+                'https://cdn.jsdelivr.net/npm/firebase@10.13.0/firebase-firestore-compat.min.js'
+            ],
+            [
+                'https://registry.npmmirror.com/firebase/10.13.0/files/firebase-app-compat.min.js',
+                'https://registry.npmmirror.com/firebase/10.13.0/files/firebase-firestore-compat.min.js'
+            ]
+        ];
+        let idx = 0;
+        const tryNext = () => {
+            if (idx >= fallbackList.length) { cb(); return; }
+            const [a, b] = fallbackList[idx++];
+            const s1a = document.createElement('script');
+            s1a.src = a;
+            s1a.onload = () => {
+                const s2b = document.createElement('script');
+                s2b.src = b;
+                s2b.onload = cb;
+                s2b.onerror = tryNext;
+                document.head.appendChild(s2b);
+            };
+            s1a.onerror = tryNext;
+            document.head.appendChild(s1a);
+        };
+        tryNext();
+    }
 }
 
 function initializeFirebaseSync(onReady) {
@@ -51,9 +100,9 @@ function initializeFirebaseSync(onReady) {
         const tryInit = () => {
             attempts++;
             try {
-                if (typeof firebase === 'undefined') {
-                    if (attempts < 10) { setTimeout(tryInit, 200); return; }
-                    LAST_SYNC_STATUS = '❌ فشل تحميل Firebase — تحقق من اتصال الإنترنت';
+                if (typeof firebase === 'undefined' || !firebase.firestore) {
+                    if (attempts < 25) { setTimeout(tryInit, 300); return; }
+                    LAST_SYNC_STATUS = '❌ فشل تحميل Firebase بعد محاولات — جرب إعادة تحميل الصفحة';
                     if (onReady) onReady(false);
                     return;
                 }
@@ -64,17 +113,28 @@ function initializeFirebaseSync(onReady) {
                     if (onReady) onReady(false);
                     return;
                 }
-                try { firebase.app(); }
-                catch (e) { firebase.initializeApp(FIREBASE_CONFIG); }
-                db = firebase.firestore();
-                FIREBASE_ENABLED = true;
-                LAST_SYNC_STATUS = '✅ متصل بالسحابة (Firebase Firestore)';
-                if (onReady) onReady(true);
-                return;
+                let appInst = null;
+                try { appInst = firebase.app(); }
+                catch (e) {
+                    try { appInst = firebase.initializeApp(FIREBASE_CONFIG); }
+                    catch (err) { console.warn(err); }
+                }
+                try {
+                    db = firebase.firestore(appInst || undefined);
+                    FIREBASE_ENABLED = true;
+                    LAST_SYNC_STATUS = '✅ متصل بالسحابة (Firebase Firestore)';
+                    if (onReady) onReady(true);
+                    return;
+                } catch (e2) {
+                    LAST_SYNC_STATUS = '❌ فشل إنشاء قاعدة البيانات: ' + (e2.message || e2);
+                    if (attempts < 15) { setTimeout(tryInit, 400); return; }
+                    FIREBASE_ENABLED = false;
+                    if (onReady) onReady(false);
+                }
             } catch (e) {
                 console.warn('Firebase init retry error:', e);
                 LAST_SYNC_STATUS = '❌ فشل تشغيل Firebase: ' + (e.message || e);
-                if (attempts < 10) { setTimeout(tryInit, 200); return; }
+                if (attempts < 25) { setTimeout(tryInit, 300); return; }
                 FIREBASE_ENABLED = false;
                 if (onReady) onReady(false);
             }
