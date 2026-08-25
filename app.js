@@ -28,16 +28,78 @@ const FIREBASE_CONFIG = {
 let FIREBASE_ENABLED = false;
 let db = null;
 let SYNC_INITIALIZED = false;
+let LAST_SYNC_STATUS = 'جارِ التحقق من الاتصال بالسحابة...';
 
-try {
-    if (typeof firebase !== 'undefined' && FIREBASE_CONFIG.projectId !== "PASTE_YOUR_PROJECT_ID") {
-        firebase.initializeApp(FIREBASE_CONFIG);
-        db = firebase.firestore();
-        FIREBASE_ENABLED = true;
+function ensureFirebaseScriptsLoaded(onDone) {
+    if (typeof firebase !== 'undefined') { onDone(); return; }
+    const appScript = document.createElement('script');
+    appScript.src = 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.min.js';
+    appScript.onload = () => {
+        const fsScript = document.createElement('script');
+        fsScript.src = 'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.min.js';
+        fsScript.onload = onDone;
+        fsScript.onerror = () => onDone();
+        document.head.appendChild(fsScript);
+    };
+    appScript.onerror = () => onDone();
+    document.head.appendChild(appScript);
+}
+
+function initializeFirebaseSync(onReady) {
+    ensureFirebaseScriptsLoaded(() => {
+        let attempts = 0;
+        const tryInit = () => {
+            attempts++;
+            try {
+                if (typeof firebase === 'undefined') {
+                    if (attempts < 10) { setTimeout(tryInit, 200); return; }
+                    LAST_SYNC_STATUS = '❌ فشل تحميل Firebase — تحقق من اتصال الإنترنت';
+                    if (onReady) onReady(false);
+                    return;
+                }
+                const cfgProjectId = (FIREBASE_CONFIG && FIREBASE_CONFIG.projectId) || '';
+                if (!cfgProjectId || cfgProjectId === 'PASTE_YOUR_PROJECT_ID' || cfgProjectId === 'your-project-id') {
+                    LAST_SYNC_STATUS = '⚠️ إعدادات Firebase فارغة — لا يوجد مزامنة سحابية';
+                    FIREBASE_ENABLED = false;
+                    if (onReady) onReady(false);
+                    return;
+                }
+                try { firebase.app(); }
+                catch (e) { firebase.initializeApp(FIREBASE_CONFIG); }
+                db = firebase.firestore();
+                FIREBASE_ENABLED = true;
+                LAST_SYNC_STATUS = '✅ متصل بالسحابة (Firebase Firestore)';
+                if (onReady) onReady(true);
+                return;
+            } catch (e) {
+                console.warn('Firebase init retry error:', e);
+                LAST_SYNC_STATUS = '❌ فشل تشغيل Firebase: ' + (e.message || e);
+                if (attempts < 10) { setTimeout(tryInit, 200); return; }
+                FIREBASE_ENABLED = false;
+                if (onReady) onReady(false);
+            }
+        };
+        tryInit();
+    });
+}
+
+async function testFirebaseWrite() {
+    if (!FIREBASE_ENABLED || !db) {
+        LAST_SYNC_STATUS = '❌ Firebase غير جاهز بعد — انتظر ثانية ثم حاول مرة أخرى';
+        return false;
     }
-} catch (e) {
-    console.warn('Firebase init skipped:', e.message);
-    FIREBASE_ENABLED = false;
+    try {
+        await db.collection('app_data').doc('__ping__').set({ t: Date.now() }, { merge: true });
+        return true;
+    } catch (e) {
+        console.warn('Firebase rules ping failed:', e);
+        if (String(e).includes('permission-denied')) {
+            LAST_SYNC_STATUS = '🚫 مرفوض من قبل Rules — انشر قواعد Firebase ثم اضغط مزامنة فورية';
+        } else {
+            LAST_SYNC_STATUS = '❌ فشل الكتابة: ' + (e.message || e);
+        }
+        return false;
+    }
 }
 
 async function cloudWrite(collection, docId, payload) {
@@ -96,12 +158,37 @@ function mergeArraysById(localArr, cloudArr) {
     return merged;
 }
 
+function showSyncStatus() {
+    const invCount = safeGet(STORAGE_KEYS.INVOICES, []).length;
+    const wrkCount = safeGet(STORAGE_KEYS.WORKERS, []).length;
+    const pid = FIREBASE_CONFIG.projectId || 'غير محدد';
+    const lines = [
+        `الحالة: ${LAST_SYNC_STATUS}`,
+        `Firebase Project ID: ${pid}`,
+        `Firebase مهيأ: ${FIREBASE_ENABLED ? 'نعم ✅' : 'لا ❌'}`,
+        `المستمع الحي للفواتير: ${SYNC_INITIALIZED ? 'مفعل' : 'غير مفعل'}`,
+        `عدد الفواتير محلياً: ${invCount}`,
+        `عدد العمال محلياً: ${wrkCount}`
+    ];
+    toast('⚙️ حالة مزامنة السحابة', lines.join('\n'), 'info');
+}
+
 async function forceSyncNow(showToast = true) {
     if (!FIREBASE_ENABLED) {
-        if (showToast) toast('⚠️ السحابة غير مفعلة', 'قم بضبط إعدادات Firebase', 'warning');
+        if (showToast) toast('جاري الاتصال بالسحابة', 'محاولة إعداد Firebase مجدداً...', 'info');
+        await new Promise((resolve) => initializeFirebaseSync(resolve));
+        if (!FIREBASE_ENABLED) {
+            if (showToast) toast('❌ تعذر الاتصال', `${LAST_SYNC_STATUS}\nاضغط حالة المزامنة لمزيد من التفاصيل`, 'error');
+            return false;
+        }
+    }
+    if (FIREBASE_ENABLED && !SYNC_INITIALIZED) startRealtimeListeners();
+    if (showToast) toast('جاري المزامنة', 'جاري فحص قواعد السحابة ودمج البيانات...', 'info');
+    const writeOk = await testFirebaseWrite();
+    if (!writeOk) {
+        if (showToast) toast('🚫 مرفوض من قواعد السحابة', LAST_SYNC_STATUS + '\nاذهب إلى Firebase → Firestore → Rules وانشر قواعد المزامنة الصحيحة ثم اضغط مزامنة فورية', 'error');
         return false;
     }
-    if (showToast) toast('جاري المزامنة', 'جاري مزامنة البيانات مع السحابة...', 'info');
     try {
         const [cloudInvoices, cloudWorkers] = await Promise.all([
             cloudRead('app_data', STORAGE_KEYS.INVOICES),
@@ -121,6 +208,7 @@ async function forceSyncNow(showToast = true) {
             cloudWrite('app_data', STORAGE_KEYS.INVOICES, safeGet(STORAGE_KEYS.INVOICES, [])),
             cloudWrite('app_data', STORAGE_KEYS.WORKERS, safeGet(STORAGE_KEYS.WORKERS, []))
         ]);
+        LAST_SYNC_STATUS = `✅ تمت المزامنة — ${safeGet(STORAGE_KEYS.INVOICES, []).length} فاتورة + ${safeGet(STORAGE_KEYS.WORKERS, []).length} عامل`;
         if (showToast) {
             const total = safeGet(STORAGE_KEYS.INVOICES, []).length + safeGet(STORAGE_KEYS.WORKERS, []).length;
             toast('✅ تمت المزامنة', `يوجد حالياً ${total} سجل متزامن على جميع الأجهزة`, 'success');
@@ -132,7 +220,8 @@ async function forceSyncNow(showToast = true) {
         return true;
     } catch (e) {
         console.warn('Force sync error:', e);
-        if (showToast) toast('❌ فشلت المزامنة', 'تحقق من الاتصال بالإنترنت ثم حاول مرة أخرى', 'error');
+        LAST_SYNC_STATUS = '❌ فشلت المزامنة: ' + (e.message || e);
+        if (showToast) toast('❌ فشلت المزامنة', LAST_SYNC_STATUS, 'error');
         return false;
     }
 }
@@ -220,18 +309,25 @@ function startRealtimeListeners() {
 }
 
 async function initCloudSync() {
-    if (!FIREBASE_ENABLED) return;
-    try {
-        const ok = await forceSyncNow(false);
-        startRealtimeListeners();
-        if (ok) {
+    initializeFirebaseSync(async (ready) => {
+        if (!ready) {
+            LAST_SYNC_STATUS = LAST_SYNC_STATUS || '❌ غير قادر على الاتصال بالسحابة';
+            return;
+        }
+        try {
+            const ok = await forceSyncNow(false);
+            startRealtimeListeners();
             const invCount = safeGet(STORAGE_KEYS.INVOICES, []).length;
             const wrkCount = safeGet(STORAGE_KEYS.WORKERS, []).length;
-            toast('☁️ متصل بالسحابة', `${invCount} فاتورة + ${wrkCount} عامل — المزامنة التلقائية مفعلة`, 'success');
+            LAST_SYNC_STATUS = `✅ متصل بالسحابة — ${invCount} فاتورة + ${wrkCount} عامل متزامن`;
+            if (ok) {
+                toast('☁️ متصل بالسحابة', `${invCount} فاتورة + ${wrkCount} عامل — المزامنة التلقائية مفعلة`, 'success');
+            }
+        } catch (e) {
+            console.warn('Cloud sync init failed:', e);
+            LAST_SYNC_STATUS = '⚠️ تم الاتصال بالسحابة لكن المزامنة فشلت — اضغط مزامنة فورية';
         }
-    } catch (e) {
-        console.warn('Cloud sync init failed:', e);
-    }
+    });
 }
 
 const CRAFTSMAN_TYPES = ['نجار', 'حداد', 'سباك', 'دهان', 'كهربائي', 'أخرى'];
@@ -1299,6 +1395,10 @@ function renderAdminDashboardHome() {
                         <i class="fas fa-sync-alt"></i>
                         مزامنة فورية
                     </button>
+                    <button class="btn btn-outline-gold btn-sm" onclick="showSyncStatus()" title="عرض حالة الاتصال بالسحابة وتفاصيل المزامنة">
+                        <i class="fas fa-info-circle"></i>
+                        حالة المزامنة
+                    </button>
                     <button class="btn btn-outline-gold btn-sm" onclick="changePasswordModal()">
                         <i class="fas fa-key"></i>
                         تغيير كلمة المرور
@@ -1552,6 +1652,10 @@ function renderWorkersDashboard() {
                     <button class="btn btn-primary btn-sm" onclick="forceSyncNow(true)" title="مزامنة يدوية فورية مع السحابة">
                         <i class="fas fa-sync-alt"></i>
                         مزامنة فورية
+                    </button>
+                    <button class="btn btn-outline-gold btn-sm" onclick="showSyncStatus()" title="عرض حالة الاتصال بالسحابة وتفاصيل المزامنة">
+                        <i class="fas fa-info-circle"></i>
+                        حالة المزامنة
                     </button>
                     <button class="btn btn-outline-gold btn-sm" onclick="changePasswordModal()">
                         <i class="fas fa-key"></i>
@@ -1842,6 +1946,10 @@ function renderWorkerDetailView(workerId) {
                         <i class="fas fa-sync-alt"></i>
                         مزامنة فورية
                     </button>
+                    <button class="btn btn-outline-gold btn-sm" onclick="showSyncStatus()" title="عرض حالة الاتصال بالسحابة وتفاصيل المزامنة">
+                        <i class="fas fa-info-circle"></i>
+                        حالة المزامنة
+                    </button>
                     <button class="btn btn-outline-gold btn-sm" onclick="changePasswordModal()">
                         <i class="fas fa-key"></i>
                         تغيير كلمة المرور
@@ -2113,6 +2221,10 @@ function renderInvoicesDashboard() {
                     <button class="btn btn-primary btn-sm" onclick="forceSyncNow(true)" title="مزامنة يدوية فورية مع السحابة">
                         <i class="fas fa-sync-alt"></i>
                         مزامنة فورية
+                    </button>
+                    <button class="btn btn-outline-gold btn-sm" onclick="showSyncStatus()" title="عرض حالة الاتصال بالسحابة وتفاصيل المزامنة">
+                        <i class="fas fa-info-circle"></i>
+                        حالة المزامنة
                     </button>
                     <button class="btn btn-outline-gold btn-sm" onclick="changePasswordModal()">
                         <i class="fas fa-key"></i>
@@ -4248,4 +4360,5 @@ window.removeSitePhoto = removeSitePhoto;
 window.handleModalSitePhotosUpload = handleModalSitePhotosUpload;
 window.removeModalSitePhoto = removeModalSitePhoto;
 window.forceSyncNow = forceSyncNow;
+window.showSyncStatus = showSyncStatus;
 window.initCloudSync = initCloudSync;
