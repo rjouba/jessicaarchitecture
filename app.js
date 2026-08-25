@@ -26,196 +26,184 @@ const FIREBASE_CONFIG = {
 };
 
 let FIREBASE_ENABLED = false;
-let db = null;
 let SYNC_INITIALIZED = false;
 let LAST_SYNC_STATUS = 'جارِ التحقق من الاتصال بالسحابة...';
+let POLLING_HANDLE = null;
+let LAST_POLL_TS = { invoices: 0, workers: 0 };
 
-function ensureFirebaseScriptsLoaded(onDone) {
-    if (typeof firebase !== 'undefined' && firebase.firestore) { onDone(); return; }
-    const fbApp = document.querySelector('script[src*="firebase-app-compat"]');
-    const fbFs = document.querySelector('script[src*="firebase-firestore-compat"]');
-    if (fbApp && fbFs) {
-        let checks = 0;
-        const iv = setInterval(() => {
-            checks++;
-            if (typeof firebase !== 'undefined' && firebase.firestore) {
-                clearInterval(iv); onDone(); return;
-            }
-            if (checks > 40) { clearInterval(iv); loadDynamically(onDone); return; }
-        }, 250);
-        return;
-    }
-    loadDynamically(onDone);
-    function loadDynamically(cb) {
-        const s1 = document.createElement('script');
-        s1.src = 'https://unpkg.com/firebase@10.13.0/firebase-app-compat.min.js';
-        s1.crossOrigin = 'anonymous';
-        s1.referrerPolicy = 'no-referrer-when-downgrade';
-        s1.onload = () => {
-            const s2 = document.createElement('script');
-            s2.src = 'https://unpkg.com/firebase@10.13.0/firebase-firestore-compat.min.js';
-            s2.crossOrigin = 'anonymous';
-            s2.referrerPolicy = 'no-referrer-when-downgrade';
-            s2.onload = cb;
-            s2.onerror = () => setTimeout(() => loadAlt(cb), 100);
-            document.head.appendChild(s2);
-        };
-        s1.onerror = () => setTimeout(() => loadAlt(cb), 100);
-        document.head.appendChild(s1);
-    }
-    function loadAlt(cb) {
-        const fallbackList = [
-            [
-                'https://cdn.jsdelivr.net/npm/firebase@10.13.0/firebase-app-compat.min.js',
-                'https://cdn.jsdelivr.net/npm/firebase@10.13.0/firebase-firestore-compat.min.js'
-            ],
-            [
-                'https://registry.npmmirror.com/firebase/10.13.0/files/firebase-app-compat.min.js',
-                'https://registry.npmmirror.com/firebase/10.13.0/files/firebase-firestore-compat.min.js'
-            ]
-        ];
-        let idx = 0;
-        const tryNext = () => {
-            if (idx >= fallbackList.length) { cb(); return; }
-            const [a, b] = fallbackList[idx++];
-            const s1a = document.createElement('script');
-            s1a.src = a;
-            s1a.onload = () => {
-                const s2b = document.createElement('script');
-                s2b.src = b;
-                s2b.onload = cb;
-                s2b.onerror = tryNext;
-                document.head.appendChild(s2b);
-            };
-            s1a.onerror = tryNext;
-            document.head.appendChild(s1a);
-        };
-        tryNext();
-    }
+function getFirestoreBase() {
+    const pid = (FIREBASE_CONFIG && FIREBASE_CONFIG.projectId) || '';
+    if (!pid || pid === 'PASTE_YOUR_PROJECT_ID') return null;
+    return `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
 }
 
-function initializeFirebaseSync(onReady) {
-    ensureFirebaseScriptsLoaded(() => {
-        let attempts = 0;
-        const tryInit = () => {
-            attempts++;
-            try {
-                if (typeof firebase === 'undefined' || !firebase.firestore) {
-                    if (attempts < 25) { setTimeout(tryInit, 300); return; }
-                    LAST_SYNC_STATUS = '❌ فشل تحميل Firebase بعد محاولات — جرب إعادة تحميل الصفحة';
-                    if (onReady) onReady(false);
-                    return;
-                }
-                const cfgProjectId = (FIREBASE_CONFIG && FIREBASE_CONFIG.projectId) || '';
-                if (!cfgProjectId || cfgProjectId === 'PASTE_YOUR_PROJECT_ID' || cfgProjectId === 'your-project-id') {
-                    LAST_SYNC_STATUS = '⚠️ إعدادات Firebase فارغة — لا يوجد مزامنة سحابية';
-                    FIREBASE_ENABLED = false;
-                    if (onReady) onReady(false);
-                    return;
-                }
-                let appInst = null;
-                try { appInst = firebase.app(); }
-                catch (e) {
-                    try { appInst = firebase.initializeApp(FIREBASE_CONFIG); }
-                    catch (err) { console.warn(err); }
-                }
-                try {
-                    db = firebase.firestore(appInst || undefined);
-                    FIREBASE_ENABLED = true;
-                    LAST_SYNC_STATUS = '✅ متصل بالسحابة (Firebase Firestore)';
-                    if (onReady) onReady(true);
-                    return;
-                } catch (e2) {
-                    LAST_SYNC_STATUS = '❌ فشل إنشاء قاعدة البيانات: ' + (e2.message || e2);
-                    if (attempts < 15) { setTimeout(tryInit, 400); return; }
-                    FIREBASE_ENABLED = false;
-                    if (onReady) onReady(false);
-                }
-            } catch (e) {
-                console.warn('Firebase init retry error:', e);
-                LAST_SYNC_STATUS = '❌ فشل تشغيل Firebase: ' + (e.message || e);
-                if (attempts < 25) { setTimeout(tryInit, 300); return; }
-                FIREBASE_ENABLED = false;
-                if (onReady) onReady(false);
-            }
-        };
-        tryInit();
-    });
+function docPath(col, doc) {
+    return `${getFirestoreBase()}/${col}/${doc}`;
 }
 
-async function testFirebaseWrite() {
-    if (!FIREBASE_ENABLED || !db) {
-        LAST_SYNC_STATUS = '❌ Firebase غير جاهز بعد — انتظر ثانية ثم حاول مرة أخرى';
-        return false;
+function apiKeyParam() {
+    const k = (FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey) || '';
+    if (!k || k === 'PASTE_YOUR_API_KEY') return '';
+    return `?key=${encodeURIComponent(k)}`;
+}
+
+function firebaseConfigValid() {
+    const base = getFirestoreBase();
+    const key = FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey;
+    return !!(base && key && key.length > 10 && key !== 'PASTE_YOUR_API_KEY');
+}
+
+function jsonToFields(value) {
+    if (value === null || value === undefined) return { nullValue: null };
+    const t = typeof value;
+    if (t === 'boolean') return { booleanValue: value };
+    if (t === 'number') {
+        if (Number.isInteger(value)) return { integerValue: String(value) };
+        return { doubleValue: value };
     }
-    try {
-        await db.collection('app_data').doc('__ping__').set({ t: Date.now() }, { merge: true });
-        return true;
-    } catch (e) {
-        console.warn('Firebase rules ping failed:', e);
-        if (String(e).includes('permission-denied')) {
-            LAST_SYNC_STATUS = '🚫 مرفوض من قبل Rules — انشر قواعد Firebase ثم اضغط مزامنة فورية';
-        } else {
-            LAST_SYNC_STATUS = '❌ فشل الكتابة: ' + (e.message || e);
+    if (t === 'string') return { stringValue: value };
+    if (value instanceof Date) return { timestampValue: value.toISOString() };
+    if (Array.isArray(value)) return { arrayValue: { values: value.map(jsonToFields) } };
+    if (t === 'object') {
+        const fields = {};
+        Object.keys(value).forEach(k => { fields[k] = jsonToFields(value[k]); });
+        return { mapValue: { fields } };
+    }
+    return { stringValue: String(value) };
+}
+
+function fieldsToJson(fields) {
+    if (!fields || typeof fields !== 'object') return null;
+    const keys = Object.keys(fields);
+    if (!keys.length) return null;
+    const firstKey = keys[0];
+    const val = fields[firstKey];
+    switch (firstKey) {
+        case 'nullValue': return null;
+        case 'booleanValue': return !!val;
+        case 'integerValue': return Number(val);
+        case 'doubleValue': return Number(val);
+        case 'stringValue': return String(val);
+        case 'timestampValue': return new Date(val).getTime();
+        case 'bytesValue': return String(val);
+        case 'referenceValue': return String(val);
+        case 'geoPointValue': return val;
+        case 'arrayValue': {
+            if (!val || !Array.isArray(val.values)) return [];
+            return val.values.map(item => fieldsToJson(item));
         }
-        return false;
+        case 'mapValue': {
+            if (!val || !val.fields || typeof val.fields !== 'object') return {};
+            const out = {};
+            Object.keys(val.fields).forEach(k => { out[k] = fieldsToJson(val.fields[k]); });
+            return out;
+        }
+        default: return null;
     }
 }
 
 async function cloudWrite(collection, docId, payload) {
-    if (!FIREBASE_ENABLED || !db) return false;
+    if (!firebaseConfigValid()) return false;
     try {
-        await db.collection(collection).doc(docId).set({
-            data: payload,
-            updatedAt: Date.now()
-        }, { merge: true });
+        const mask = Object.keys(payload || {});
+        const body = { fields: jsonToFields(payload || {}).mapValue.fields, name: `${collection}/${docId}` };
+        const param = apiKeyParam() + (mask.length ? `&updateMask.fieldPaths=${mask.map(encodeURIComponent).join('&updateMask.fieldPaths=')}` : '');
+        const url = docPath(collection, docId) + param;
+        const res = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => String(res.status));
+            if (res.status === 403 || String(errText).includes('PERMISSION_DENIED')) {
+                LAST_SYNC_STATUS = '🚫 مرفوض من Rules — انشر قواعد Firebase ثم اضغط مزامنة فورية';
+            } else {
+                LAST_SYNC_STATUS = `❌ فشل الكتابة للسحابة (HTTP ${res.status})`;
+            }
+            console.warn('Firestore REST write error:', res.status, errText.slice(0, 200));
+            return false;
+        }
+        if (!FIREBASE_ENABLED) FIREBASE_ENABLED = true;
         return true;
     } catch (e) {
-        console.warn('Cloud write failed:', e);
+        console.warn('Cloud write REST failed:', e);
+        LAST_SYNC_STATUS = '❌ فشل الكتابة للسحابة: ' + (e.message || String(e)).slice(0, 80);
         return false;
     }
 }
 
 async function cloudRead(collection, docId) {
-    if (!FIREBASE_ENABLED || !db) return { ok: false };
+    if (!firebaseConfigValid()) return { ok: false };
     try {
-        const snap = await db.collection(collection).doc(docId).get();
-        if (snap.exists) {
-            const d = snap.data();
-            return { ok: true, data: d.data, updatedAt: d.updatedAt || 0 };
+        const url = docPath(collection, docId) + apiKeyParam();
+        const res = await fetch(url, { method: 'GET' });
+        if (res.status === 404) return { ok: true, empty: true };
+        if (!res.ok) {
+            if (res.status === 403) LAST_SYNC_STATUS = '🚫 مرفوض من Rules — انشر قواعد Firebase';
+            const errText = await res.text().catch(() => '');
+            console.warn('Firestore REST read error:', res.status, errText.slice(0, 200));
+            return { ok: false, status: res.status };
         }
-        return { ok: true, empty: true };
+        const doc = await res.json();
+        if (!doc || !doc.fields) return { ok: true, empty: true };
+        const parsed = fieldsToJson({ mapValue: { fields: doc.fields || {} } }) || {};
+        const dataArr = parsed.data;
+        const updatedAt = Number(parsed.updatedAt || 0);
+        return { ok: true, data: Array.isArray(dataArr) ? dataArr : null, updatedAt };
     } catch (e) {
-        console.warn('Cloud read failed:', e);
+        console.warn('Cloud read REST failed:', e);
         return { ok: false };
     }
 }
 
-function mergeArraysById(localArr, cloudArr) {
-    const map = new Map();
-    const localList = Array.isArray(localArr) ? localArr : [];
-    const cloudList = Array.isArray(cloudArr) ? cloudArr : [];
-    localList.forEach(item => { if (item && item.id) map.set(item.id, { ...item, _src: 'L' }); });
-    cloudList.forEach(item => {
-        if (!item || !item.id) return;
-        const existing = map.get(item.id);
-        if (!existing) {
-            map.set(item.id, { ...item, _src: 'C' });
-        } else {
-            const existingUpd = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
-            const itemUpd = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
-            if (itemUpd >= existingUpd) {
-                map.set(item.id, { ...item, _src: 'C' });
+async function testFirebaseWrite() {
+    if (!firebaseConfigValid()) {
+        LAST_SYNC_STATUS = '⚠️ إعدادات Firebase غير مكتملة — apiKey أو projectId مفقود';
+        FIREBASE_ENABLED = false;
+        return false;
+    }
+    try {
+        const base = getFirestoreBase();
+        const url = docPath('app_data', '__ping__') + apiKeyParam();
+        const body = { fields: { t: { integerValue: String(Date.now()) } } };
+        const res = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            if (res.status === 403 || res.status === 401) {
+                LAST_SYNC_STATUS = '🚫 مرفوض من قواعد السحابة (Rules) — انشر قواعد Firebase ثم اضغط مزامنة فورية';
+            } else if (res.status >= 400 && res.status < 500) {
+                const txt = await res.text().catch(() => '');
+                LAST_SYNC_STATUS = `❌ فشل إعداد السحابة (HTTP ${res.status}) — ${(txt || '').slice(0, 60)}`;
+            } else {
+                LAST_SYNC_STATUS = `❌ خادم السحابة غير متاح (HTTP ${res.status})`;
             }
+            FIREBASE_ENABLED = false;
+            return false;
         }
-    });
-    const merged = Array.from(map.values()).map(it => { const c = { ...it }; delete c._src; return c; });
-    merged.sort((a, b) => {
-        const ta = a.createdAt || a.updatedAt || '0';
-        const tb = b.createdAt || b.updatedAt || '0';
-        return String(tb).localeCompare(String(ta));
-    });
-    return merged;
+        FIREBASE_ENABLED = true;
+        return true;
+    } catch (e) {
+        LAST_SYNC_STATUS = '❌ فشل فحص الاتصال: ' + (e.message || String(e)).slice(0, 80);
+        FIREBASE_ENABLED = false;
+        return false;
+    }
+}
+
+async function initializeFirebaseSync(onReady) {
+    setTimeout(async () => {
+        if (!firebaseConfigValid()) {
+            LAST_SYNC_STATUS = '⚠️ إعدادات Firebase فارغة أو غير صحيحة';
+            if (onReady) onReady(false);
+            return;
+        }
+        const ok = await testFirebaseWrite();
+        if (ok) LAST_SYNC_STATUS = '✅ متصل بالسحابة (Firebase Firestore REST)';
+        if (onReady) onReady(!!ok);
+    }, 50);
 }
 
 function showSyncStatus() {
@@ -226,7 +214,7 @@ function showSyncStatus() {
         `الحالة: ${LAST_SYNC_STATUS}`,
         `Firebase Project ID: ${pid}`,
         `Firebase مهيأ: ${FIREBASE_ENABLED ? 'نعم ✅' : 'لا ❌'}`,
-        `المستمع الحي للفواتير: ${SYNC_INITIALIZED ? 'مفعل' : 'غير مفعل'}`,
+        `الاستطلاع التلقائي كل 3 ثواني: ${SYNC_INITIALIZED ? 'مفعل' : 'غير مفعل'}`,
         `عدد الفواتير محلياً: ${invCount}`,
         `عدد العمال محلياً: ${wrkCount}`
     ];
@@ -234,19 +222,14 @@ function showSyncStatus() {
 }
 
 async function forceSyncNow(showToast = true) {
-    if (!FIREBASE_ENABLED) {
-        if (showToast) toast('جاري الاتصال بالسحابة', 'محاولة إعداد Firebase مجدداً...', 'info');
-        await new Promise((resolve) => initializeFirebaseSync(resolve));
-        if (!FIREBASE_ENABLED) {
-            if (showToast) toast('❌ تعذر الاتصال', `${LAST_SYNC_STATUS}\nاضغط حالة المزامنة لمزيد من التفاصيل`, 'error');
-            return false;
-        }
+    if (!firebaseConfigValid()) {
+        if (showToast) toast('❌ إعدادات Firebase مفقودة', LAST_SYNC_STATUS || 'تحقق من FIREBASE_CONFIG', 'error');
+        return false;
     }
-    if (FIREBASE_ENABLED && !SYNC_INITIALIZED) startRealtimeListeners();
-    if (showToast) toast('جاري المزامنة', 'جاري فحص قواعد السحابة ودمج البيانات...', 'info');
+    if (showToast) toast('جاري الاتصال بالسحابة', 'جاري فحص قواعد السحابة ودمج البيانات...', 'info');
     const writeOk = await testFirebaseWrite();
     if (!writeOk) {
-        if (showToast) toast('🚫 مرفوض من قواعد السحابة', LAST_SYNC_STATUS + '\nاذهب إلى Firebase → Firestore → Rules وانشر قواعد المزامنة الصحيحة ثم اضغط مزامنة فورية', 'error');
+        if (showToast) toast('🚫 مرفوض من قواعد السحابة', LAST_SYNC_STATUS + '\nاذهب إلى Firebase → Firestore → Rules وانشر القواعد الصحيحة ثم عد وهنا واضغط مزامنة فورية', 'error');
         return false;
     }
     try {
@@ -268,6 +251,8 @@ async function forceSyncNow(showToast = true) {
             cloudWrite('app_data', STORAGE_KEYS.INVOICES, safeGet(STORAGE_KEYS.INVOICES, [])),
             cloudWrite('app_data', STORAGE_KEYS.WORKERS, safeGet(STORAGE_KEYS.WORKERS, []))
         ]);
+        LAST_POLL_TS.invoices = Date.now();
+        LAST_POLL_TS.workers = Date.now();
         LAST_SYNC_STATUS = `✅ تمت المزامنة — ${safeGet(STORAGE_KEYS.INVOICES, []).length} فاتورة + ${safeGet(STORAGE_KEYS.WORKERS, []).length} عامل`;
         if (showToast) {
             const total = safeGet(STORAGE_KEYS.INVOICES, []).length + safeGet(STORAGE_KEYS.WORKERS, []).length;
@@ -277,95 +262,59 @@ async function forceSyncNow(showToast = true) {
             const { page } = getRoute();
             if (['admin', 'invoices', 'workers', 'invoice', 'worker'].includes(page)) renderCurrentRoute();
         } catch (e) {}
+        if (!SYNC_INITIALIZED) startRealtimeListeners();
         return true;
     } catch (e) {
         console.warn('Force sync error:', e);
-        LAST_SYNC_STATUS = '❌ فشلت المزامنة: ' + (e.message || e);
+        LAST_SYNC_STATUS = '❌ فشلت المزامنة: ' + (e.message || e).toString().slice(0, 80);
         if (showToast) toast('❌ فشلت المزامنة', LAST_SYNC_STATUS, 'error');
         return false;
     }
 }
 
-async function pushAllLocalToCloud() {
-    if (!FIREBASE_ENABLED) return;
-    const invoices = safeGet(STORAGE_KEYS.INVOICES, []);
-    const workers = safeGet(STORAGE_KEYS.WORKERS, []);
-    await Promise.all([
-        cloudWrite('app_data', STORAGE_KEYS.INVOICES, invoices),
-        cloudWrite('app_data', STORAGE_KEYS.WORKERS, workers)
-    ]);
-}
-
-async function pullCloudToLocal(overwrite = false) {
-    if (!FIREBASE_ENABLED) return false;
-    let anyChanged = false;
-    const [cloudInvoices, cloudWorkers] = await Promise.all([
-        cloudRead('app_data', STORAGE_KEYS.INVOICES),
-        cloudRead('app_data', STORAGE_KEYS.WORKERS)
-    ]);
-    if (cloudInvoices.ok && !cloudInvoices.empty && Array.isArray(cloudInvoices.data)) {
-        const localInvoices = safeGet(STORAGE_KEYS.INVOICES, []);
-        const merged = overwrite
-            ? cloudInvoices.data
-            : mergeArraysById(localInvoices, cloudInvoices.data);
-        if (JSON.stringify(localInvoices) !== JSON.stringify(merged)) {
-            safeSet(STORAGE_KEYS.INVOICES, merged);
-            anyChanged = true;
-        }
-    }
-    if (cloudWorkers.ok && !cloudWorkers.empty && Array.isArray(cloudWorkers.data)) {
-        const localWorkers = safeGet(STORAGE_KEYS.WORKERS, []);
-        const merged = overwrite
-            ? cloudWorkers.data
-            : mergeArraysById(localWorkers, cloudWorkers.data);
-        if (JSON.stringify(localWorkers) !== JSON.stringify(merged)) {
-            safeSet(STORAGE_KEYS.WORKERS, merged);
-            anyChanged = true;
-        }
-    }
-    return anyChanged;
-}
-
 function startRealtimeListeners() {
-    if (!FIREBASE_ENABLED || !db) return;
     if (SYNC_INITIALIZED) return;
     SYNC_INITIALIZED = true;
-
-    db.collection('app_data').doc(STORAGE_KEYS.INVOICES).onSnapshot(snap => {
-        if (!snap.exists) return;
-        const d = snap.data();
-        if (!d || !Array.isArray(d.data)) return;
-        const localInvoices = safeGet(STORAGE_KEYS.INVOICES, []);
-        const merged = mergeArraysById(localInvoices, d.data);
-        if (JSON.stringify(localInvoices) !== JSON.stringify(merged)) {
-            safeSet(STORAGE_KEYS.INVOICES, merged);
-            try {
-                const { page } = getRoute();
-                if (['admin', 'invoices', 'invoice'].includes(page)) {
-                    renderCurrentRoute();
-                    toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+    if (POLLING_HANDLE) clearInterval(POLLING_HANDLE);
+    POLLING_HANDLE = setInterval(async () => {
+        if (!FIREBASE_ENABLED) return;
+        try {
+            const [cloudInvoices, cloudWorkers] = await Promise.all([
+                cloudRead('app_data', STORAGE_KEYS.INVOICES),
+                cloudRead('app_data', STORAGE_KEYS.WORKERS)
+            ]);
+            let changed = false;
+            if (cloudInvoices.ok && !cloudInvoices.empty && Array.isArray(cloudInvoices.data)) {
+                const local = safeGet(STORAGE_KEYS.INVOICES, []);
+                const merged = mergeArraysById(local, cloudInvoices.data);
+                if (JSON.stringify(local) !== JSON.stringify(merged)) {
+                    safeSet(STORAGE_KEYS.INVOICES, merged);
+                    changed = true;
+                    const { page } = getRoute();
+                    if (['admin', 'invoices', 'invoice'].includes(page)) {
+                        renderCurrentRoute();
+                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+                    }
                 }
-            } catch (e) {}
-        }
-    }, err => console.warn('Invoice listener err:', err));
-
-    db.collection('app_data').doc(STORAGE_KEYS.WORKERS).onSnapshot(snap => {
-        if (!snap.exists) return;
-        const d = snap.data();
-        if (!d || !Array.isArray(d.data)) return;
-        const localWorkers = safeGet(STORAGE_KEYS.WORKERS, []);
-        const merged = mergeArraysById(localWorkers, d.data);
-        if (JSON.stringify(localWorkers) !== JSON.stringify(merged)) {
-            safeSet(STORAGE_KEYS.WORKERS, merged);
-            try {
-                const { page } = getRoute();
-                if (['admin', 'workers', 'worker'].includes(page)) {
-                    renderCurrentRoute();
-                    toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+            }
+            if (cloudWorkers.ok && !cloudWorkers.empty && Array.isArray(cloudWorkers.data)) {
+                const local = safeGet(STORAGE_KEYS.WORKERS, []);
+                const merged = mergeArraysById(local, cloudWorkers.data);
+                if (JSON.stringify(local) !== JSON.stringify(merged)) {
+                    safeSet(STORAGE_KEYS.WORKERS, merged);
+                    changed = true;
+                    const { page } = getRoute();
+                    if (['admin', 'workers', 'worker'].includes(page)) {
+                        renderCurrentRoute();
+                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+                    }
                 }
-            } catch (e) {}
+            }
+            if (changed) { LAST_POLL_TS.invoices = Date.now(); LAST_POLL_TS.workers = Date.now(); }
+        } catch (e) {
+            console.warn('Poll sync error:', e);
         }
-    }, err => console.warn('Workers listener err:', err));
+    }, 3000);
 }
 
 async function initCloudSync() {
@@ -379,10 +328,8 @@ async function initCloudSync() {
             startRealtimeListeners();
             const invCount = safeGet(STORAGE_KEYS.INVOICES, []).length;
             const wrkCount = safeGet(STORAGE_KEYS.WORKERS, []).length;
-            LAST_SYNC_STATUS = `✅ متصل بالسحابة — ${invCount} فاتورة + ${wrkCount} عامل متزامن`;
-            if (ok) {
-                toast('☁️ متصل بالسحابة', `${invCount} فاتورة + ${wrkCount} عامل — المزامنة التلقائية مفعلة`, 'success');
-            }
+            LAST_SYNC_STATUS = `✅ متصل بالسحابة — ${invCount} فاتورة + ${wrkCount} عامل متزامن (REST Polling)`;
+            if (ok) toast('☁️ متصل بالسحابة', `${invCount} فاتورة + ${wrkCount} عامل — المزامنة التلقائية مفعلة كل 3 ثواني`, 'success');
         } catch (e) {
             console.warn('Cloud sync init failed:', e);
             LAST_SYNC_STATUS = '⚠️ تم الاتصال بالسحابة لكن المزامنة فشلت — اضغط مزامنة فورية';
