@@ -1,0 +1,219 @@
+/* ============================================
+   Luxury Works Gallery — Premium Auto Carousel
+   (Refined Thin Double Hairline Gold Frame, Understated Luxury)
+   ============================================ */
+
+.works-section {
+    position: relative;
+    padding: 3.5rem 0 2rem;
+    background: var(--color-black);
+    color: var(--color-white);
+    overflow: hidden;
+}
+
+.works-section .section-header {
+    color: var(--color-white);
+    padding: 0 2rem 1.6rem;
+    max-width: 1300px;
+    margin: 0 auto;
+    text-align: right;
+}
+
+.works-section .section-label {
+    color: var(--color-gold);
+}
+
+.works-section .section-title {
+    color: #f9f6ef;
+}
+
+.works-section .section-desc {
+    color: rgba(255, 255, 255, 0.62);
+    max-width: 640px;
+    margin-left: auto;
+}
+
+/* ===== LUXURY CAROUSEL WRAPPER ===== */
+.works-carousel-wrap {
+    position: relative;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 2rem;
+}
+
+.works-carousel {
+    position: relative;
+    /* Refined near-golden architectural aspect (not too wide, not too tall) */
+    aspect-ratio: 16 / 10;
+    max-height: 720px;
+    border-radius: 2px;
+    background: #0a0a0a;
+    /* Subtle, elegant shadow — like a framed art print on a dark wall */
+    box-shadow:
+        0 30px 70px rgba(0, 0, 0, 0.72),
+        0 12px 30px rgba(0, 0, 0, 0.48),
+        0 2px 6px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+
+/* ===== SLIDES ===== */
+.works-c-slides {
+    position: absolute;
+    inset: 0;
+}
+
+.works-c-slide {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity 1.4s cubic-bezier(.22,.8,.22,1);
+    will-change: opacity, transform;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.works-c-slide.is-active {
+    opacity: 1;
+    pointer-events: auto;
+    z-index: 2;
+}
+
+.works-c-slide img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    transform: scale(1.0);
+    transition: transform 14s cubic-bezier(.22,.8,.22,1) 0.3s;
+    will-change: transform;
+    /* Gentle cinematic grade — matches the refined vibe of the site */
+    filter: saturate(0.97) contrast(1.03) brightness(0.985);
+}
+
+.works-c-slide.is-active img {
+    transform: scale(1.10);
+}
+
+.works-c-vignette {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    background:
+        radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 42%, rgba(0,0,0,0.30) 82%, rgba(0,0,0,0.50) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, rgba(0,0,0,0) 26%, rgba(0,0,0,0) 72%, rgba(0,0,0,0.30) 100%);
+    pointer-events: none;
+}
+
+/* ===== REFINED THIN DOUBLE HAIRLINE FRAME (quiet luxury) ===== */
+.works-c-frame {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+}
+
+/* Two elegant hairline rectangles — perfectly balanced 2-line border */
+.works-c-frame-line {
+    position: absolute;
+    border: 1px solid transparent;
+    border-radius: 1px;
+}
+
+.works-c-frame-line-outer {
+    inset: 16px;
+    border-color: rgba(232, 200, 128, 0.62);
+    /* Subtle gold glow — very soft, almost imperceptible */
+    box-shadow:
+        0 0 1px rgba(232, 200, 128, 0.55) inset,
+        0 0 14px rgba(232, 200, 128, 0.08);
+}
+
+.works-c-frame-line-inner {
+    inset: 30px;
+    border-color: rgba(232, 200, 128, 0.36);
+    box-shadow: 0 0 1px rgba(232, 200, 128, 0.3) inset;
+}
+
+/* ===== DOTS INDICATOR (bottom center, inside frame) ===== */
+.works-c-dots {
+    position: absolute;
+    left: 50%;
+    bottom: 54px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 11px;
+    z-index: 12;
+    padding: 9px 16px;
+    background: rgba(10, 10, 10, 0.32);
+    backdrop-filter: blur(6px) saturate(1.15);
+    -webkit-backdrop-filter: blur(6px) saturate(1.15);
+    border: 1px solid rgba(232, 200, 128, 0.14);
+    border-radius: 999px;
+}
+
+.works-c-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px solid rgba(232, 200, 128, 0.50);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0;
+    cursor: pointer;
+    transition: all 0.4s cubic-bezier(.2,.8,.2,1);
+}
+
+.works-c-dot:hover {
+    transform: scale(1.4);
+    background: rgba(232, 200, 128, 0.45);
+    border-color: rgba(248, 222, 160, 0.88);
+    box-shadow: 0 0 9px rgba(232, 200, 128, 0.45);
+}
+
+.works-c-dot.is-active {
+    width: 30px;
+    height: 8px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #b08537, #e8c880 50%, #f7dfa5);
+    border-color: rgba(255, 246, 210, 0.55);
+    box-shadow: 0 0 12px rgba(232, 200, 128, 0.68);
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1100px) {
+    .works-carousel-wrap { padding: 0 1.5rem; }
+    .works-c-frame-line-outer { inset: 14px; }
+    .works-c-frame-line-inner { inset: 26px; }
+}
+
+@media (max-width: 820px) {
+    .works-section { padding: 2.6rem 0 1.6rem; }
+    .works-section .section-header { padding: 0 1.2rem 1.2rem; }
+    .works-carousel-wrap { padding: 0 1rem; }
+    .works-carousel { aspect-ratio: 4 / 3; max-height: 640px; }
+
+    .works-c-frame-line-outer { inset: 12px; }
+    .works-c-frame-line-inner { inset: 22px; }
+
+    .works-c-dots { bottom: 42px; gap: 10px; padding: 8px 14px; }
+    .works-c-dot { width: 7px; height: 7px; }
+    .works-c-dot.is-active { width: 24px; height: 7px; }
+}
+
+@media (max-width: 560px) {
+    .works-section { padding: 2.2rem 0 1.4rem; }
+    .works-carousel-wrap { padding: 0 0.8rem; }
+    .works-carousel { aspect-ratio: 1 / 1.02; max-height: 600px; }
+
+    .works-c-frame-line-outer { inset: 10px; }
+    .works-c-frame-line-inner { inset: 18px; }
+
+    .works-c-dots {
+        bottom: 30px;
+        gap: 9px;
+        padding: 7px 12px;
+    }
+    .works-c-dot { width: 7px; height: 7px; }
+    .works-c-dot.is-active { width: 22px; height: 7px; }
+}
