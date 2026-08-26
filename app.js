@@ -234,6 +234,33 @@ function showSyncStatus() {
     toast('⚙️ حالة مزامنة السحابة', lines.join('\n'), 'info');
 }
 
+function mergeArraysById(a, b) {
+    const arrA = Array.isArray(a) ? a : [];
+    const arrB = Array.isArray(b) ? b : [];
+    const map = new Map();
+    const ts = (x) => Number(x && (x.updatedAt || x.createdAt || x.lastModified || 0)) || 0;
+    for (const item of arrA) {
+        if (item && item.id) map.set(String(item.id), { ...item });
+    }
+    for (const item of arrB) {
+        if (!item || !item.id) continue;
+        const key = String(item.id);
+        const existing = map.get(key);
+        if (!existing) {
+            map.set(key, { ...item });
+        } else {
+            const tA = ts(existing);
+            const tB = ts(item);
+            if (tB > tA) {
+                map.set(key, { ...item });
+            } else {
+                map.set(key, { ...existing, ...item, id: existing.id });
+            }
+        }
+    }
+    return Array.from(map.values()).sort((x, y) => ts(y) - ts(x));
+}
+
 async function forceSyncNow(showToast = true) {
     if (!firebaseConfigValid()) {
         if (showToast) toast('❌ إعدادات Firebase مفقودة', LAST_SYNC_STATUS || 'تحقق من FIREBASE_CONFIG', 'error');
