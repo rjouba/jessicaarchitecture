@@ -105,23 +105,31 @@ function fieldsToJson(fields) {
 async function cloudWrite(collection, docId, payload) {
     if (!firebaseConfigValid()) return false;
     try {
-        const mask = Object.keys(payload || {});
-        const body = { fields: jsonToFields(payload || {}).mapValue.fields, name: `${collection}/${docId}` };
-        const param = apiKeyParam() + (mask.length ? `&updateMask.fieldPaths=${mask.map(encodeURIComponent).join('&updateMask.fieldPaths=')}` : '');
-        const url = docPath(collection, docId) + param;
+        const wrapper = {
+            data: payload,
+            updatedAt: Date.now()
+        };
+        const encodedAll = jsonToFields(wrapper);
+        const body = { fields: encodedAll.mapValue.fields };
+        const allKeys = Object.keys(body.fields || {});
+        const updateParam = allKeys.length
+            ? '&' + allKeys.map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&')
+            : '';
+        const url = docPath(collection, docId) + apiKeyParam() + updateParam;
         const res = await fetch(url, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
         if (!res.ok) {
-            const errText = await res.text().catch(() => String(res.status));
-            if (res.status === 403 || String(errText).includes('PERMISSION_DENIED')) {
+            let errText = '';
+            try { errText = await res.text(); } catch {}
+            if (res.status === 403 || res.status === 401 || (errText && errText.includes('PERMISSION_DENIED'))) {
                 LAST_SYNC_STATUS = '🚫 مرفوض من Rules — انشر قواعد Firebase ثم اضغط مزامنة فورية';
             } else {
                 LAST_SYNC_STATUS = `❌ فشل الكتابة للسحابة (HTTP ${res.status})`;
             }
-            console.warn('Firestore REST write error:', res.status, errText.slice(0, 200));
+            console.warn('Firestore REST write error:', res.status, (errText || '').slice(0, 200));
             return false;
         }
         if (!FIREBASE_ENABLED) FIREBASE_ENABLED = true;
@@ -164,7 +172,6 @@ async function testFirebaseWrite() {
         return false;
     }
     try {
-        const base = getFirestoreBase();
         const url = docPath('app_data', '__ping__') + apiKeyParam();
         const body = { fields: { t: { integerValue: String(Date.now()) } } };
         const res = await fetch(url, {
@@ -173,11 +180,12 @@ async function testFirebaseWrite() {
             body: JSON.stringify(body)
         });
         if (!res.ok) {
-            if (res.status === 403 || res.status === 401) {
+            let txt = '';
+            try { txt = await res.text(); } catch {}
+            if (res.status === 403 || res.status === 401 || (txt && txt.includes('PERMISSION_DENIED'))) {
                 LAST_SYNC_STATUS = '🚫 مرفوض من قواعد السحابة (Rules) — انشر قواعد Firebase ثم اضغط مزامنة فورية';
             } else if (res.status >= 400 && res.status < 500) {
-                const txt = await res.text().catch(() => '');
-                LAST_SYNC_STATUS = `❌ فشل إعداد السحابة (HTTP ${res.status}) — ${(txt || '').slice(0, 60)}`;
+                LAST_SYNC_STATUS = `❌ فشل إعداد السحابة (HTTP ${res.status}) — تأكد من أن Firestore مهيأ وأن القواعد منشورة`;
             } else {
                 LAST_SYNC_STATUS = `❌ خادم السحابة غير متاح (HTTP ${res.status})`;
             }
