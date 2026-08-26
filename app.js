@@ -172,7 +172,7 @@ async function testFirebaseWrite() {
         return false;
     }
     try {
-        const url = docPath('app_data', '__ping__') + apiKeyParam();
+        const url = docPath('app_data', 'ping_test') + apiKeyParam();
         const body = { fields: { t: { integerValue: String(Date.now()) } } };
         const res = await fetch(url, {
             method: 'PATCH',
@@ -185,7 +185,12 @@ async function testFirebaseWrite() {
             if (res.status === 403 || res.status === 401 || (txt && txt.includes('PERMISSION_DENIED'))) {
                 LAST_SYNC_STATUS = '🚫 مرفوض من قواعد السحابة (Rules) — انشر قواعد Firebase ثم اضغط مزامنة فورية';
             } else if (res.status >= 400 && res.status < 500) {
-                LAST_SYNC_STATUS = `❌ فشل إعداد السحابة (HTTP ${res.status}) — تأكد من أن Firestore مهيأ وأن القواعد منشورة`;
+                let detail = 'تأكد من أن Firestore مهيأ وأن القواعد منشورة';
+                try {
+                    const j = JSON.parse(txt || '{}');
+                    if (j && j.error && j.error.message) detail = j.error.message.slice(0, 120);
+                } catch {}
+                LAST_SYNC_STATUS = `❌ فشل إعداد السحابة (HTTP ${res.status}) — ${detail}`;
             } else {
                 LAST_SYNC_STATUS = `❌ خادم السحابة غير متاح (HTTP ${res.status})`;
             }
@@ -607,6 +612,7 @@ function getAllInvoices() {
 
 function saveAllInvoices(invoices) {
     safeSet(STORAGE_KEYS.INVOICES, invoices);
+    setTimeout(() => { if (FIREBASE_ENABLED || firebaseConfigValid()) cloudWrite('app_data', STORAGE_KEYS.INVOICES, invoices); }, 20);
 }
 
 function getInvoiceById(id) {
@@ -797,6 +803,7 @@ function getAllWorkers() {
 
 function saveAllWorkers(workers) {
     safeSet(STORAGE_KEYS.WORKERS, workers);
+    setTimeout(() => { if (FIREBASE_ENABLED || firebaseConfigValid()) cloudWrite('app_data', STORAGE_KEYS.WORKERS, workers); }, 20);
 }
 
 function getWorkerById(id) {
