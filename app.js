@@ -259,6 +259,20 @@ function mergeArraysById(a, b) {
     const arrB = Array.isArray(b) ? b : [];
     const map = new Map();
     const ts = (x) => Number(x && (x.updatedAt || x.createdAt || x.lastModified || 0)) || 0;
+    const arrayMaxTs = (arr) => arr.reduce((m, x) => Math.max(m, ts(x)), 0);
+    const setMaxTs = (arr, stamp) => {
+        if (stamp <= 0) return arr;
+        return arr.map(x => ({ ...x, updatedAt: ts(x) >= stamp ? (x.updatedAt || new Date(stamp).toISOString()) : new Date(stamp).toISOString() }));
+    };
+    const tA = arrayMaxTs(arrA);
+    const tB = arrayMaxTs(arrB);
+    const DIFF_THRESHOLD_MS = 3000; // أكثر من 3 ثواني فرق = الجهاز الأحدث يفوز كلياً (حتى لو كان أصغر = حذف)
+    const absDiff = Math.abs(tA - tB);
+    if (absDiff > DIFF_THRESHOLD_MS) {
+        const tNewer = Math.max(tA, tB);
+        const newerArr = tA > tB ? arrA : arrB;
+        return setMaxTs(newerArr, tNewer).sort((x, y) => ts(y) - ts(x));
+    }
     for (const item of arrA) {
         if (item && item.id) map.set(String(item.id), { ...item });
     }
@@ -269,9 +283,9 @@ function mergeArraysById(a, b) {
         if (!existing) {
             map.set(key, { ...item });
         } else {
-            const tA = ts(existing);
-            const tB = ts(item);
-            if (tB > tA) {
+            const tAi = ts(existing);
+            const tBi = ts(item);
+            if (tBi > tAi) {
                 map.set(key, { ...item });
             } else {
                 map.set(key, { ...existing, ...item, id: existing.id });
@@ -783,6 +797,9 @@ function updateInvoice(id, updates) {
 function deleteInvoice(id) {
     const invoices = getAllInvoices();
     const filtered = invoices.filter(inv => inv.id !== id);
+    // تحديث أحدث timestamp في المصفوفة للتأكيد على الجهاز الحالي أحدث (حتى لو الحذف = أصغر حجماً)
+    const touchNow = new Date().toISOString();
+    filtered.forEach(inv => inv.updatedAt = (inv.updatedAt && new Date(inv.updatedAt).getTime() > new Date(touchNow).getTime()) ? inv.updatedAt : touchNow);
     saveAllInvoices(filtered);
     return filtered.length !== invoices.length;
 }
@@ -919,6 +936,9 @@ function updateWorker(id, updates) {
 function deleteWorker(id) {
     const workers = getAllWorkers();
     const filtered = workers.filter(w => w.id !== id);
+    // تحديث أحدث timestamp في المصفوفة للتأكيد على الجهاز الحالي أحدث (حتى لو الحذف = أصغر حجماً)
+    const touchNow = new Date().toISOString();
+    filtered.forEach(w => w.updatedAt = (w.updatedAt && new Date(w.updatedAt).getTime() > new Date(touchNow).getTime()) ? w.updatedAt : touchNow);
     saveAllWorkers(filtered);
     return filtered.length !== workers.length;
 }
