@@ -165,6 +165,24 @@ async function cloudRead(collection, docId) {
     }
 }
 
+async function cloudDelete(collection, docId) {
+    if (!firebaseConfigValid()) return false;
+    try {
+        const url = docPath(collection, docId) + apiKeyParam();
+        const res = await fetch(url, { method: 'DELETE' });
+        if (res.status === 404) return true; // already gone
+        if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            console.warn('Firestore REST delete error:', res.status, errText.slice(0, 200));
+            return false;
+        }
+        return true;
+    } catch (e) {
+        console.warn('Cloud delete REST failed:', e);
+        return false;
+    }
+}
+
 async function testFirebaseWrite() {
     if (!firebaseConfigValid()) {
         LAST_SYNC_STATUS = '⚠️ إعدادات Firebase غير مكتملة — apiKey أو projectId مفقود';
@@ -223,11 +241,13 @@ function showSyncStatus() {
     const invCount = safeGet(STORAGE_KEYS.INVOICES, []).length;
     const wrkCount = safeGet(STORAGE_KEYS.WORKERS, []).length;
     const pid = FIREBASE_CONFIG.projectId || 'غير محدد';
+    const lastAuto = LAST_POLL_TS.lastAutoSync ? new Date(LAST_POLL_TS.lastAutoSync).toLocaleTimeString('ar-EG') : 'لم تتم بعد';
     const lines = [
         `الحالة: ${LAST_SYNC_STATUS}`,
         `Firebase Project ID: ${pid}`,
         `Firebase مهيأ: ${FIREBASE_ENABLED ? 'نعم ✅' : 'لا ❌'}`,
-        `الاستطلاع التلقائي كل 3 ثواني: ${SYNC_INITIALIZED ? 'مفعل' : 'غير مفعل'}`,
+        `🔄 المزامنة التلقائية كل 5 دقائق: ${SYNC_INITIALIZED ? 'مفعل ✅' : 'غير مفعل ❌'}`,
+        `⏰ آخر مزامنة تلقائية: ${lastAuto}`,
         `عدد الفواتير محلياً: ${invCount}`,
         `عدد العمال محلياً: ${wrkCount}`
     ];
@@ -316,6 +336,7 @@ function startRealtimeListeners() {
     if (SYNC_INITIALIZED) return;
     SYNC_INITIALIZED = true;
     if (POLLING_HANDLE) clearInterval(POLLING_HANDLE);
+    // كل 5 دقائق: sync كامل push/pull ثنائي الاتجاه
     POLLING_HANDLE = setInterval(async () => {
         if (!FIREBASE_ENABLED) return;
         try {
@@ -351,10 +372,12 @@ function startRealtimeListeners() {
                 }
             }
             if (changed) { LAST_POLL_TS.invoices = Date.now(); LAST_POLL_TS.workers = Date.now(); }
+            LAST_POLL_TS.lastAutoSync = Date.now();
+            console.log('🔄 Auto-sync (كل 5 دقائق) مكتمل:', new Date().toLocaleTimeString('ar-EG'));
         } catch (e) {
             console.warn('Poll sync error:', e);
         }
-    }, 3000);
+    }, 300000); // 5 دقائق = 300,000 ms
 }
 
 async function initCloudSync() {
@@ -639,7 +662,15 @@ function getAllInvoices() {
 
 function saveAllInvoices(invoices) {
     safeSet(STORAGE_KEYS.INVOICES, invoices);
-    setTimeout(() => { if (FIREBASE_ENABLED || firebaseConfigValid()) cloudWrite('app_data', STORAGE_KEYS.INVOICES, invoices); }, 20);
+    // مزامنة فورية للسحابة (بدون setTimeout — ننتظر الرد) + إعادة المحاولة 3 مرات
+    (async () => {
+        if (!(FIREBASE_ENABLED || firebaseConfigValid())) return;
+        for (let i = 0; i < 3; i++) {
+            const ok = await cloudWrite('app_data', STORAGE_KEYS.INVOICES, invoices);
+            if (ok) break;
+            await new Promise(r => setTimeout(r, 200 * (i + 1)));
+        }
+    })();
 }
 
 function getInvoiceById(id) {
@@ -659,13 +690,14 @@ function createInvoice(data) {
             id: generateId('cpay'),
             amountSYP: Number(cp.amountSYP) || 0,
             amountUSD: Number(cp.amountUSD) || 0,
-            note: cp.note || '',
+            materialName: cp.materialName || '',
             date: cp.date || todayStr()
         })) : [],
         payments: Array.isArray(data.payments) ? data.payments.map(p => ({
             id: generateId('pay'),
             amountSYP: Number(p.amountSYP) || 0,
             amountUSD: Number(p.amountUSD) || 0,
+            description: p.description || '',
             craftsmanType: p.craftsmanType || '',
             craftsmanName: p.craftsmanName || '',
             date: p.date || todayStr()
@@ -696,11 +728,16 @@ function updateInvoice(id, updates) {
     if (updates.agreedAmountUSD !== undefined) inv.agreedAmountUSD = Number(updates.agreedAmountUSD) || 0;
     if (updates.payments !== undefined) {
         inv.payments = updates.payments.map(p => {
-            if (p.id) return { ...p, amountSYP: Number(p.amountSYP) || 0, amountUSD: Number(p.amountUSD) || 0 };
+            if (p.id) return {
+                ...p,
+                amountSYP: Number(p.amountSYP) || 0,
+                amountUSD: Number(p.amountUSD) || 0
+            };
             return {
                 id: generateId('pay'),
                 amountSYP: Number(p.amountSYP) || 0,
                 amountUSD: Number(p.amountUSD) || 0,
+                description: p.description || '',
                 craftsmanType: p.craftsmanType || '',
                 craftsmanName: p.craftsmanName || '',
                 date: p.date || todayStr()
@@ -709,12 +746,16 @@ function updateInvoice(id, updates) {
     }
     if (updates.clientPayments !== undefined) {
         inv.clientPayments = updates.clientPayments.map(cp => {
-            if (cp.id) return { ...cp, amountSYP: Number(cp.amountSYP) || 0, amountUSD: Number(cp.amountUSD) || 0 };
+            if (cp.id) return {
+                ...cp,
+                amountSYP: Number(cp.amountSYP) || 0,
+                amountUSD: Number(cp.amountUSD) || 0
+            };
             return {
                 id: generateId('cpay'),
                 amountSYP: Number(cp.amountSYP) || 0,
                 amountUSD: Number(cp.amountUSD) || 0,
-                note: cp.note || '',
+                materialName: cp.materialName || '',
                 date: cp.date || todayStr()
             };
         });
@@ -830,7 +871,15 @@ function getAllWorkers() {
 
 function saveAllWorkers(workers) {
     safeSet(STORAGE_KEYS.WORKERS, workers);
-    setTimeout(() => { if (FIREBASE_ENABLED || firebaseConfigValid()) cloudWrite('app_data', STORAGE_KEYS.WORKERS, workers); }, 20);
+    // مزامنة فورية للسحابة (بدون setTimeout — ننتظر الرد) + إعادة المحاولة 3 مرات
+    (async () => {
+        if (!(FIREBASE_ENABLED || firebaseConfigValid())) return;
+        for (let i = 0; i < 3; i++) {
+            const ok = await cloudWrite('app_data', STORAGE_KEYS.WORKERS, workers);
+            if (ok) break;
+            await new Promise(r => setTimeout(r, 200 * (i + 1)));
+        }
+    })();
 }
 
 function getWorkerById(id) {
@@ -1119,42 +1168,42 @@ function renderHomePage() {
             <div class="works-carousel-wrap" id="worksCarouselWrap">
                 <div class="works-carousel" id="worksCarousel">
 
-                    <!-- Layer 1: Slides (images fade in/out) -->
+                    <!-- Layer 1: Slides (images fade in/out) — AI guaranteed CDN URLs, no works/ folder needed, NO TITLES, images only -->
                     <div class="works-c-slides" id="worksSlides">
                         <div class="works-c-slide" data-project="0">
-                            <img src="works/0bf6e5ee-c51f-4aa1-b9ec-1567141bf451.jpg" alt="فيلا كركوك الحديثة">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxury%20modern%20villa%20exterior%20with%20warm%20evening%20lighting%20in%20Iraq%20stone%20architecture%20photorealistic%204k&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="1">
-                            <img src="works/1f83e2b1-504d-4cfa-878e-7d641ad09c65.jpg" alt="مول الشام التجاري">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxurious%20commercial%20shopping%20mall%20exterior%20modern%20glass%20facade%20gold%20accents%20Syria%20middle%20east%20architecture&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="2">
-                            <img src="works/38f946fa-13eb-4e91-8383-877c668c10a6.jpg" alt="جناح فندق اللؤلؤة">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=elegant%20luxury%20hotel%20suite%20bedroom%20pearl%20white%20and%20gold%20interior%20design%20king%20bed%20chandelier%20photorealistic&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="3">
-                            <img src="works/65df641e-5ce2-4bc3-8c72-500a3d71f9eb.jpg" alt="استوديو الإبداع">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=modern%20creative%20architecture%20design%20studio%20office%20interior%20architect%20desk%20with%20blueprints%20warm%20lighting&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="4">
-                            <img src="works/689278f9-1e70-4ca7-9975-2b4fea607df4.jpg" alt="قصر العليا للمناسبات">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxurious%20wedding%20event%20palace%20ballroom%20hall%20grand%20chandeliers%20marble%20gold%20arabesque%20design&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="5">
-                            <img src="works/70a6bab2-9f7a-4a75-b57c-976fd174905a.jpg" alt="مكتب تنفيذي فاخر">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxury%20executive%20ceo%20office%20wood%20desk%20leather%20chair%20gold%20and%20dark%20blue%20modern%20interior%20photorealistic&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="6">
-                            <img src="works/80997e48-7490-4e96-be58-56fd7dbd1c69.jpg" alt="مطعم ديار الشام">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=upscale%20fine%20dining%20restaurant%20interior%20sham%20levantine%20cuisine%20warm%20ambient%20lighting%20arabic%20tiles%20wooden%20tables&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="7">
-                            <img src="works/9d52e986-c4cd-4c50-9625-59f6b7734552.jpg" alt="استوديو الإنتاج">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=modern%20video%20production%20studio%20interior%20camera%20equipment%20green%20screen%20led%20lighting%20professional%20dark%20walls&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="8">
-                            <img src="works/9e265670-785b-4bd6-aee2-1b9bd10cf242.jpg" alt="فيلا الجوار الحديثة">
+                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=contemporary%20neighborhood%20family%20villa%20residential%20house%20exterior%20white%20stone%20green%20garden%20sunny%20day&image_size=landscape_4_3" alt="">
                             <div class="works-c-vignette"></div>
                         </div>
                     </div>
@@ -1311,13 +1360,13 @@ function attachHomeEvents() {
         let activeIndex = 0;
         let autoTimer = null;
 
-        // Build dots (9 dots, bottom center)
+        // Build dots (9 dots, bottom center) — NO LABELS, images-only design
         if (worksDotsWrap) {
             worksDotsWrap.innerHTML = '';
             for (let i = 0; i < SLIDE_COUNT; i++) {
                 const b = document.createElement('button');
                 b.className = 'works-c-dot' + (i === 0 ? ' is-active' : '');
-                b.setAttribute('aria-label', `المشروع ${i + 1}`);
+                b.setAttribute('aria-label', '');
                 b.addEventListener('click', () => {
                     goToSlide(i);
                     resetAutoTimer();
@@ -2607,7 +2656,7 @@ function renderInvoiceView(invoiceId) {
                                 <tr>
                                     <th style="width:18%;">المبلغ (ل.س)</th>
                                     <th style="width:18%;">المبلغ ($)</th>
-                                    <th>الملاحظات</th>
+                                    <th>اسم المادة</th>
                                     <th style="width:20%;">تاريخ الاستلام</th>
                                     ${isAdmin ? '<th style="width:6%;"></th>' : ''}
                                 </tr>
@@ -2629,7 +2678,7 @@ function renderInvoiceView(invoiceId) {
                                     <tr class="table-total-row">
                                         <td>${formatCurrencySYP((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountSYP)||0), 0))}</td>
                                         <td>${formatCurrencyUSD((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountUSD)||0), 0))}</td>
-                                        <td colspan="${isAdmin ? '1' : '0'}" style="text-align:left;">إجمالي المبالغ المستلمة</td>
+                                        <td colspan="${isAdmin ? '1' : '0'}" style="text-align:left;">إجمالي المستلمة</td>
                                         ${isAdmin ? '<td></td><td></td>' : '<td></td>'}
                                     </tr>
                                 </tfoot>
@@ -2651,11 +2700,12 @@ function renderInvoiceView(invoiceId) {
                         <table class="craftsmen-table" id="craftsmenTable">
                             <thead>
                                 <tr>
-                                    <th style="width:14%;">الدفعة (ل.س)</th>
-                                    <th style="width:14%;">الدفعة ($)</th>
-                                    <th style="width:18%;">نوع الحرفي</th>
-                                    <th>اسم الحرفي</th>
-                                    <th style="width:18%;">التاريخ</th>
+                                    <th style="width:12%;">الدفعة (ل.س)</th>
+                                    <th style="width:12%;">الدفعة ($)</th>
+                                    <th style="width:9%;">نوع الحرفي</th>
+                                    <th style="width:15%;">اسم الحرفي</th>
+                                    <th>التفاصيل</th>
+                                    <th style="width:14%;">التاريخ</th>
                                     ${isAdmin ? '<th style="width:6%;"></th>' : ''}
                                 </tr>
                             </thead>
@@ -2664,7 +2714,7 @@ function renderInvoiceView(invoiceId) {
                                     ? invoice.payments.map(p => renderPaymentRow(p, isAdmin)).join('')
                                     : `
                                         <tr>
-                                            <td colspan="${isAdmin ? '6' : '5'}" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
+                                            <td colspan="${isAdmin ? '7' : '6'}" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
                                                 ${isAdmin ? 'لا توجد مدفوعات بعد. اضغط "إضافة دفعة / حرفي" للبدء.' : 'لا توجد مدفوعات مسجلة حالياً.'}
                                             </td>
                                         </tr>
@@ -2676,7 +2726,7 @@ function renderInvoiceView(invoiceId) {
                                     <tr class="table-total-row">
                                         <td>${formatCurrencySYP(totalReceivedSYP)}</td>
                                         <td>${formatCurrencyUSD(totalReceivedUSD)}</td>
-                                        <td colspan="${isAdmin ? '3' : '2'}" style="text-align:left;">إجمالي المدفوعات</td>
+                                        <td colspan="${isAdmin ? '4' : '3'}" style="text-align:left;"><strong>إجمالي المدفوعات</strong></td>
                                         ${isAdmin ? '<td></td>' : ''}
                                     </tr>
                                 </tfoot>
@@ -2795,20 +2845,25 @@ function renderInvoiceView(invoiceId) {
 }
 
 function renderPaymentRow(payment, isAdmin) {
+    const totalSYP = Number(payment.amountSYP) || 0;
+    const totalUSD = Number(payment.amountUSD) || 0;
     if (isAdmin) {
         return `
             <tr data-pay-id="${payment.id}">
                 <td>
-                    <input type="number" class="pay-amount-syp" min="0" value="${payment.amountSYP}" placeholder="0" oninput="updateAmountsLive()">
+                    <input type="number" class="pay-amount-syp big-price" min="0" value="${totalSYP}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
                 <td>
-                    <input type="number" class="pay-amount-usd" min="0" value="${payment.amountUSD}" placeholder="0" oninput="updateAmountsLive()">
+                    <input type="number" class="pay-amount-usd big-price" min="0" value="${totalUSD}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
                 <td>
                     <input type="text" class="pay-type" value="${escapeHtml(payment.craftsmanType)}" placeholder="مثال: نجار / حداد / سباك">
                 </td>
                 <td>
                     <input type="text" class="pay-name" value="${escapeHtml(payment.craftsmanName)}" placeholder="اسم الحرفي">
+                </td>
+                <td>
+                    <input type="text" class="pay-description" value="${escapeHtml(payment.description || '')}" placeholder="التفاصيل">
                 </td>
                 <td>
                     <input type="date" class="pay-date" value="${formatDateInput(payment.date)}">
@@ -2823,10 +2878,11 @@ function renderPaymentRow(payment, isAdmin) {
     } else {
         return `
             <tr>
-                <td style="font-weight:600;">${formatCurrencySYP(payment.amountSYP)}</td>
-                <td style="font-weight:600;">${formatCurrencyUSD(payment.amountUSD)}</td>
+                <td style="font-weight:600;">${formatCurrencySYP(totalSYP)}</td>
+                <td style="font-weight:600;">${formatCurrencyUSD(totalUSD)}</td>
                 <td><span class="craftsman-type-badge type-أخرى">${escapeHtml(payment.craftsmanType) || '-'}</span></td>
                 <td>${escapeHtml(payment.craftsmanName) || '-'}</td>
+                <td>${escapeHtml(payment.description || '—')}</td>
                 <td>${formatDate(payment.date)}</td>
             </tr>
         `;
@@ -2882,16 +2938,19 @@ function addPaymentRow() {
     newRow.setAttribute('data-pay-id', tempId);
     newRow.innerHTML = `
         <td>
-            <input type="number" class="pay-amount-syp" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
+            <input type="number" class="pay-amount-syp big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
         </td>
         <td>
-            <input type="number" class="pay-amount-usd" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
+            <input type="number" class="pay-amount-usd big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
         </td>
         <td>
             <input type="text" class="pay-type" placeholder="مثال: نجار / حداد / سباك">
         </td>
         <td>
             <input type="text" class="pay-name" placeholder="اسم الحرفي">
+        </td>
+        <td>
+            <input type="text" class="pay-description" placeholder="التفاصيل">
         </td>
         <td>
             <input type="date" class="pay-date" value="${todayStr()}">
@@ -2916,17 +2975,19 @@ function removePaymentRow(btn) {
 }
 
 function renderClientPaymentRow(cp, isAdmin) {
+    const totalSYP = Number(cp.amountSYP) || 0;
+    const totalUSD = Number(cp.amountUSD) || 0;
     if (isAdmin) {
         return `
             <tr data-cpay-id="${cp.id}">
                 <td>
-                    <input type="number" class="cpay-amount-syp" min="0" value="${cp.amountSYP}" placeholder="0" oninput="updateAmountsLive()">
+                    <input type="number" class="cpay-amount-syp big-price" min="0" value="${totalSYP}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
                 <td>
-                    <input type="number" class="cpay-amount-usd" min="0" value="${cp.amountUSD}" placeholder="0" oninput="updateAmountsLive()">
+                    <input type="number" class="cpay-amount-usd big-price" min="0" value="${totalUSD}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
                 <td>
-                    <input type="text" class="cpay-note" value="${escapeHtml(cp.note || '')}" placeholder="مثال: دفعة أولى، دفعة نهائية، عربون، ...">
+                    <input type="text" class="cpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="اسم المادة">
                 </td>
                 <td>
                     <input type="date" class="cpay-date" value="${formatDateInput(cp.date)}">
@@ -2941,9 +3002,9 @@ function renderClientPaymentRow(cp, isAdmin) {
     }
     return `
         <tr data-cpay-id="${cp.id}">
-            <td class="amount-cell amount-paid" style="font-size:0.85rem;">${formatCurrencySYP(Number(cp.amountSYP) || 0)}</td>
-            <td class="amount-cell amount-pending" style="font-size:0.85rem;">${formatCurrencyUSD(Number(cp.amountUSD) || 0)}</td>
-            <td style="color:var(--color-gray); font-size:0.9rem;">${escapeHtml(cp.note || '—')}</td>
+            <td class="amount-cell amount-paid">${formatCurrencySYP(totalSYP)}</td>
+            <td class="amount-cell amount-pending">${formatCurrencyUSD(totalUSD)}</td>
+            <td>${escapeHtml(cp.materialName || '—')}</td>
             <td>${formatDate(cp.date)}</td>
         </tr>
     `;
@@ -2959,13 +3020,13 @@ function addClientPaymentRow() {
     newRow.setAttribute('data-cpay-id', tempId);
     newRow.innerHTML = `
         <td>
-            <input type="number" class="cpay-amount-syp" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
+            <input type="number" class="cpay-amount-syp big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
         </td>
         <td>
-            <input type="number" class="cpay-amount-usd" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
+            <input type="number" class="cpay-amount-usd big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
         </td>
         <td>
-            <input type="text" class="cpay-note" placeholder="مثال: دفعة أولى، دفعة نهائية، عربون، ...">
+            <input type="text" class="cpay-material-name" placeholder="اسم المادة">
         </td>
         <td>
             <input type="date" class="cpay-date" value="${todayStr()}">
@@ -2998,9 +3059,9 @@ function collectClientPaymentsFromDOM() {
         const id = row.getAttribute('data-cpay-id');
         const amountSYP = row.querySelector('.cpay-amount-syp')?.value;
         const amountUSD = row.querySelector('.cpay-amount-usd')?.value;
-        const note = row.querySelector('.cpay-note')?.value;
+        const materialName = row.querySelector('.cpay-material-name')?.value;
         const date = row.querySelector('.cpay-date')?.value;
-        cps.push({ id, amountSYP, amountUSD, note, date });
+        cps.push({ id, amountSYP, amountUSD, materialName, date });
     });
     return cps;
 }
@@ -3033,10 +3094,9 @@ function updateClientPaymentsFooter() {
         }
         tfoot.innerHTML = `
             <tr class="table-total-row">
-                <td>${formatCurrencySYP(totalSYP)}</td>
-                <td>${formatCurrencyUSD(totalUSD)}</td>
-                <td style="text-align:left;">إجمالي المبالغ المستلمة</td>
-                <td></td>
+                <td><strong>${formatCurrencySYP(totalSYP)}</strong></td>
+                <td><strong>${formatCurrencyUSD(totalUSD)}</strong></td>
+                <td colspan="2" style="text-align:left;"><strong>إجمالي المبالغ المستلمة</strong></td>
                 <td></td>
             </tr>
         `;
@@ -3094,8 +3154,9 @@ function collectPaymentsFromDOM() {
         const amountUSD = row.querySelector('.pay-amount-usd')?.value;
         const type = row.querySelector('.pay-type')?.value;
         const name = row.querySelector('.pay-name')?.value;
+        const description = row.querySelector('.pay-description')?.value;
         const date = row.querySelector('.pay-date')?.value;
-        payments.push({ id, amountSYP, amountUSD, craftsmanType: type, craftsmanName: name, date });
+        payments.push({ id, amountSYP, amountUSD, craftsmanType: type, craftsmanName: name, description, date });
     });
     return payments;
 }
@@ -3150,7 +3211,7 @@ function updateCraftsmenTableFooter() {
     if (rows.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
+                <td colspan="7" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
                     لا توجد مدفوعات بعد. اضغط "إضافة دفعة / حرفي" للبدء.
                 </td>
             </tr>
@@ -3169,9 +3230,9 @@ function updateCraftsmenTableFooter() {
         }
         tfoot.innerHTML = `
             <tr class="table-total-row">
-                <td>${formatCurrencySYP(totalSYP)}</td>
-                <td>${formatCurrencyUSD(totalUSD)}</td>
-                <td colspan="3" style="text-align:left;">إجمالي المدفوعات</td>
+                <td><strong>${formatCurrencySYP(totalSYP)}</strong></td>
+                <td><strong>${formatCurrencyUSD(totalUSD)}</strong></td>
+                <td colspan="4" style="text-align:left;"><strong>إجمالي المدفوعات</strong></td>
                 <td></td>
             </tr>
         `;
@@ -3419,10 +3480,10 @@ function renderInvoiceFormModal(invoice) {
             <table class="craftsmen-table" id="modalClientPaymentsTable">
                 <thead>
                     <tr>
-                        <th style="width:15%;">ل.س</th>
-                        <th style="width:15%;">$</th>
-                        <th>الملاحظات</th>
-                        <th style="width:18%;">تاريخ الاستلام</th>
+                        <th style="width:20%;">ل.س</th>
+                        <th style="width:20%;">$</th>
+                        <th>اسم المادة</th>
+                        <th style="width:20%;">تاريخ الاستلام</th>
                         <th style="width:6%;"></th>
                     </tr>
                 </thead>
@@ -3430,13 +3491,13 @@ function renderInvoiceFormModal(invoice) {
                     ${(data.clientPayments || []).map(cp => `
                         <tr data-mcpay-id="${cp.id}">
                             <td>
-                                <input type="number" min="0" class="mcpay-amount-syp" value="${cp.amountSYP}" placeholder="0">
+                                <input type="number" min="0" class="mcpay-amount-syp big-price" value="${cp.amountSYP}" placeholder="0">
                             </td>
                             <td>
-                                <input type="number" min="0" class="mcpay-amount-usd" value="${cp.amountUSD}" placeholder="0">
+                                <input type="number" min="0" class="mcpay-amount-usd big-price" value="${cp.amountUSD}" placeholder="0">
                             </td>
                             <td>
-                                <input type="text" class="mcpay-note" value="${escapeHtml(cp.note || '')}" placeholder="مثال: دفعة أولى / عربون">
+                                <input type="text" class="mcpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="اسم المادة">
                             </td>
                             <td>
                                 <input type="date" class="mcpay-date" value="${formatDateInput(cp.date)}">
@@ -3469,11 +3530,12 @@ function renderInvoiceFormModal(invoice) {
             <table class="craftsmen-table" id="modalCraftsmenTable">
                 <thead>
                     <tr>
-                        <th style="width:15%;">ل.س</th>
-                        <th style="width:15%;">$</th>
-                        <th style="width:22%;">نوع الحرفي</th>
+                        <th style="width:14%;">ل.س</th>
+                        <th style="width:14%;">$</th>
+                        <th style="width:14%;">نوع الحرفي</th>
                         <th>اسم الحرفي</th>
-                        <th style="width:18%;">التاريخ</th>
+                        <th>التفاصيل</th>
+                        <th style="width:16%;">التاريخ</th>
                         <th style="width:6%;"></th>
                     </tr>
                 </thead>
@@ -3481,16 +3543,19 @@ function renderInvoiceFormModal(invoice) {
                     ${data.payments.map(p => `
                         <tr data-mpay-id="${p.id}">
                             <td>
-                                <input type="number" min="0" class="mpay-amount-syp" value="${p.amountSYP}" placeholder="0">
+                                <input type="number" min="0" class="mpay-amount-syp big-price" value="${p.amountSYP}" placeholder="0">
                             </td>
                             <td>
-                                <input type="number" min="0" class="mpay-amount-usd" value="${p.amountUSD}" placeholder="0">
+                                <input type="number" min="0" class="mpay-amount-usd big-price" value="${p.amountUSD}" placeholder="0">
                             </td>
                             <td>
                                 <input type="text" class="mpay-type" value="${escapeHtml(p.craftsmanType)}" placeholder="مثال: نجار">
                             </td>
                             <td>
                                 <input type="text" class="mpay-name" value="${escapeHtml(p.craftsmanName)}" placeholder="اسم الحرفي">
+                            </td>
+                            <td>
+                                <input type="text" class="mpay-description" value="${escapeHtml(p.description || '')}" placeholder="التفاصيل">
                             </td>
                             <td>
                                 <input type="date" class="mpay-date" value="${formatDateInput(p.date)}">
@@ -3584,16 +3649,19 @@ function modalAddPayment() {
     tr.setAttribute('data-mpay-id', tempId);
     tr.innerHTML = `
         <td>
-            <input type="number" min="0" class="mpay-amount-syp" value="0" placeholder="0">
+            <input type="number" min="0" class="mpay-amount-syp big-price" value="0" placeholder="0">
         </td>
         <td>
-            <input type="number" min="0" class="mpay-amount-usd" value="0" placeholder="0">
+            <input type="number" min="0" class="mpay-amount-usd big-price" value="0" placeholder="0">
         </td>
         <td>
             <input type="text" class="mpay-type" placeholder="مثال: نجار">
         </td>
         <td>
             <input type="text" class="mpay-name" placeholder="اسم الحرفي">
+        </td>
+        <td>
+            <input type="text" class="mpay-description" placeholder="التفاصيل">
         </td>
         <td>
             <input type="date" class="mpay-date" value="${todayStr()}">
@@ -3665,13 +3733,13 @@ function modalAddClientPayment() {
     tr.setAttribute('data-mcpay-id', tempId);
     tr.innerHTML = `
         <td>
-            <input type="number" min="0" class="mcpay-amount-syp" value="0" placeholder="0">
+            <input type="number" min="0" class="mcpay-amount-syp big-price" value="0" placeholder="0">
         </td>
         <td>
-            <input type="number" min="0" class="mcpay-amount-usd" value="0" placeholder="0">
+            <input type="number" min="0" class="mcpay-amount-usd big-price" value="0" placeholder="0">
         </td>
         <td>
-            <input type="text" class="mcpay-note" placeholder="مثال: دفعة أولى / عربون">
+            <input type="text" class="mcpay-material-name" placeholder="اسم المادة">
         </td>
         <td>
             <input type="date" class="mcpay-date" value="${todayStr()}">
@@ -3707,8 +3775,9 @@ function collectModalPayments() {
         const amountUSD = row.querySelector('.mpay-amount-usd')?.value;
         const type = row.querySelector('.mpay-type')?.value;
         const name = row.querySelector('.mpay-name')?.value;
+        const description = row.querySelector('.mpay-description')?.value;
         const date = row.querySelector('.mpay-date')?.value;
-        payments.push({ id, amountSYP, amountUSD, craftsmanType: type, craftsmanName: name, date });
+        payments.push({ id, amountSYP, amountUSD, craftsmanType: type, craftsmanName: name, description, date });
     });
     return payments.filter(p => (Number(p.amountSYP) > 0 || Number(p.amountUSD) > 0) || p.craftsmanName);
 }
@@ -3722,11 +3791,11 @@ function collectModalClientPayments() {
         const id = row.getAttribute('data-mcpay-id');
         const amountSYP = row.querySelector('.mcpay-amount-syp')?.value;
         const amountUSD = row.querySelector('.mcpay-amount-usd')?.value;
-        const note = row.querySelector('.mcpay-note')?.value;
+        const materialName = row.querySelector('.mcpay-material-name')?.value;
         const date = row.querySelector('.mcpay-date')?.value;
-        cps.push({ id, amountSYP, amountUSD, note, date });
+        cps.push({ id, amountSYP, amountUSD, materialName, date });
     });
-    return cps.filter(cp => (Number(cp.amountSYP) > 0 || Number(cp.amountUSD) > 0) || cp.note);
+    return cps.filter(cp => (Number(cp.amountSYP) > 0 || Number(cp.amountUSD) > 0) || cp.materialName);
 }
 
 function collectModalMaterials() {
