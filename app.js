@@ -271,7 +271,8 @@ function mergeArraysById(a, b) {
     const arrA = Array.isArray(a) ? a : [];
     const arrB = Array.isArray(b) ? b : [];
     const map = new Map();
-    const ts = (x) => Number(x && (x.updatedAt || x.createdAt || x.lastModified || 0)) || 0;
+    const ts = (x) => Number(x && (x.updatedAt || x.createdAt || x.lastModified || (x.deletedAt ? Number(x.deletedAt) : 0))) || 0;
+    const isTombstone = (x) => !!(x && (x.__tombstone || x.deletedAt));
     const arrayMaxTs = (arr) => arr.reduce((m, x) => Math.max(m, ts(x)), 0);
     const setMaxTs = (arr, stamp) => {
         if (stamp <= 0) return arr;
@@ -305,7 +306,10 @@ function mergeArraysById(a, b) {
             }
         }
     }
-    return Array.from(map.values()).sort((x, y) => ts(y) - ts(x));
+    // 🪦 TOMBSTONES: أي سجل عنده deletedAt أو __tombstone → احذفه نهائياً من النتيجة
+    // (السحابة أكّدت الحذف، أو الحذف من نفس الجهاز وصلت للسحابة)
+    const final = Array.from(map.values()).filter(item => !isTombstone(item));
+    return final.sort((x, y) => ts(y) - ts(x));
 }
 
 async function forceSyncNow(showToast = true) {
@@ -325,30 +329,61 @@ async function forceSyncNow(showToast = true) {
             cloudRead('app_data', STORAGE_KEYS.WORKERS),
             cloudRead('app_data', STORAGE_KEYS.PROFESSIONS)
         ]);
-        const localInvoices = safeGet(STORAGE_KEYS.INVOICES, []);
-        const localWorkers = safeGet(STORAGE_KEYS.WORKERS, []);
-        const localProfessions = safeGet(STORAGE_KEYS.PROFESSIONS, null) || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
-        const mergedInvoices = mergeArraysById(localInvoices, cloudInvoices.data || []);
-        const mergedWorkers = mergeArraysById(localWorkers, cloudWorkers.data || []);
-        let mergedProfessions = mergeArraysById(localProfessions, cloudProfessions.data || []);
+        // 🪦 استخدم Raw versions لنحافظ على tombstones (شواهد الحذف) في الدمج
+        const localInvoices = getAllInvoicesRaw();
+        const localWorkers = getAllWorkersRaw();
+        const localProfessions = getAllProfessionsRaw() || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+
+        // 🪦 تنظيف tombstones قديمة (> 7 أيام) محلياً قبل الدمج
+        const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 أيام
+        const cleanTombstones = (arr) => arr.filter(x => {
+            if (!x) return false;
+            if (x.__tombstone || x.deletedAt) {
+                const t = Number(x.deletedAt || x.updatedAt || 0);
+                if (t > 0 && (Date.now() - t) > TOMBSTONE_TTL_MS) return false; // قديمة → احذف
+                return true; // حديثة → ابقها
+            }
+            return true;
+        });
+        const cleanedInvoices = cleanTombstones(localInvoices);
+        const cleanedWorkers = cleanTombstones(localWorkers);
+        const cleanedProfessions = cleanTombstones(localProfessions);
+        if (cleanedInvoices.length !== localInvoices.length) safeSet(STORAGE_KEYS.INVOICES, cleanedInvoices);
+        if (cleanedWorkers.length !== localWorkers.length) safeSet(STORAGE_KEYS.WORKERS, cleanedWorkers);
+        if (cleanedProfessions.length !== localProfessions.length) safeSet(STORAGE_KEYS.PROFESSIONS, cleanedProfessions);
+
+        // 🪦 ادفع tombstones المحلية الحديثة للسحابة فوراً (قبل الدمج) لتُحذف من كل الأجهزة
+        const pushTombstones = async (key, local) => {
+            const tombstones = local.filter(x => x && (x.__tombstone || x.deletedAt));
+            if (tombstones.length > 0) {
+                await cloudWrite('app_data', key, local);
+            }
+        };
+        await Promise.all([
+            pushTombstones(STORAGE_KEYS.INVOICES, cleanedInvoices),
+            pushTombstones(STORAGE_KEYS.WORKERS, cleanedWorkers),
+            pushTombstones(STORAGE_KEYS.PROFESSIONS, cleanedProfessions)
+        ]);
+
+        // الآن ندمج — mergeArraysById يحذف tombstones تلقائياً
+        const mergedInvoices = mergeArraysById(cleanedInvoices, cloudInvoices.data || []);
+        const mergedWorkers = mergeArraysById(cleanedWorkers, cloudWorkers.data || []);
+        let mergedProfessions = mergeArraysById(cleanedProfessions, cloudProfessions.data || []);
         // 🔥 HARD GUARANTEE — إذا كانت نتيجة الدمج للمهن فارغة والـ DEFAULT موجودة → نستعيد الـ DEFAULT ولا نسمح بمصفوفة فارغة أبداً
         if ((!mergedProfessions || !Array.isArray(mergedProfessions) || mergedProfessions.length === 0) && Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
             console.warn('%c⚠️ [FORCE SYNC] mergedProfessions was EMPTY after merge → overriding with DEFAULT_PROFESSIONS to avoid data loss!', 'background:#fd7e14;color:#fff;font-weight:bold;');
             mergedProfessions = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
         }
         // #region debug-point forceSyncNow-professions
-        // ⚠️ ملاحظة: cloudPrfEmpty يُعرَّف بعد هذا الموضع، لذلك السطر التالي مُعلَّق
-        //         (كان يسبّب ReferenceError — Cannot access 'cloudPrfEmpty' before initialization)
         console.group('%c🔄 [DEBUG SYNC] forceSyncNow — Professions merge summary', 'background:#e2e3e5;color:#383d41;font-weight:bold;');
-        console.log('localProfessions count (before):', Array.isArray(localProfessions) ? localProfessions.length : 'N/A');
+        console.log('localProfessions count (before):', Array.isArray(cleanedProfessions) ? cleanedProfessions.length : 'N/A');
         console.log('cloudProfessions.data count (cloud):', (cloudProfessions.ok && Array.isArray(cloudProfessions.data)) ? cloudProfessions.data.length : 'N/A');
         console.log('mergedProfessions count (after):', Array.isArray(mergedProfessions) ? mergedProfessions.length : 'N/A');
-        // console.log('cloudPrfEmpty flag (so we will seed cloud):', cloudPrfEmpty); // moved below
         console.groupEnd();
         // #endregion
-        const invChanged = JSON.stringify(localInvoices) !== JSON.stringify(mergedInvoices);
-        const wrkChanged = JSON.stringify(localWorkers) !== JSON.stringify(mergedWorkers);
-        const prfChanged = JSON.stringify(localProfessions) !== JSON.stringify(mergedProfessions);
+        const invChanged = JSON.stringify(cleanedInvoices) !== JSON.stringify(mergedInvoices);
+        const wrkChanged = JSON.stringify(cleanedWorkers) !== JSON.stringify(mergedWorkers);
+        const prfChanged = JSON.stringify(cleanedProfessions) !== JSON.stringify(mergedProfessions);
         const cloudInvEmpty = !cloudInvoices.ok || cloudInvoices.empty || !Array.isArray(cloudInvoices.data) || cloudInvoices.data.length === 0;
         const cloudWrkEmpty = !cloudWorkers.ok || cloudWorkers.empty || !Array.isArray(cloudWorkers.data) || cloudWorkers.data.length === 0;
         const cloudPrfEmpty = !cloudProfessions.ok || cloudProfessions.empty || !Array.isArray(cloudProfessions.data) || cloudProfessions.data.length === 0;
@@ -363,10 +398,12 @@ async function forceSyncNow(showToast = true) {
         LAST_POLL_TS.invoices = Date.now();
         LAST_POLL_TS.workers = Date.now();
         LAST_POLL_TS.professions = Date.now();
-        LAST_SYNC_STATUS = `✅ تمت المزامنة — ${safeGet(STORAGE_KEYS.INVOICES, []).length} فاتورة + ${safeGet(STORAGE_KEYS.WORKERS, []).length} عامل + ${safeGet(STORAGE_KEYS.PROFESSIONS, []).length} وظيفة`;
+        const visibleInv = mergedInvoices.filter(i => !(i.__tombstone || i.deletedAt)).length;
+        const visibleWrk = mergedWorkers.filter(w => !(w.__tombstone || w.deletedAt)).length;
+        const visiblePrf = mergedProfessions.filter(p => !(p.__tombstone || p.deletedAt)).length;
+        LAST_SYNC_STATUS = `✅ تمت المزامنة — ${visibleInv} فاتورة + ${visibleWrk} عامل + ${visiblePrf} وظيفة`;
         if (showToast) {
-            const total = safeGet(STORAGE_KEYS.INVOICES, []).length + safeGet(STORAGE_KEYS.WORKERS, []).length + safeGet(STORAGE_KEYS.PROFESSIONS, []).length;
-            toast('✅ تمت المزامنة', `يوجد حالياً ${total} سجل متزامن على جميع الأجهزة`, 'success');
+            toast('✅ تمت المزامنة', `${visibleInv} فاتورة + ${visibleWrk} عامل + ${visiblePrf} وظيفة — الحذف تام على جميع الأجهزة 🪦`, 'success');
         }
         try {
             const { page } = getRoute();
@@ -396,8 +433,9 @@ function startRealtimeListeners() {
                 cloudRead('app_data', STORAGE_KEYS.PROFESSIONS)
             ]);
             let changed = false;
+            // 🪦 استخدم Raw versions للدمج (لإبقاء tombstones حتى تنتشر)
             if (cloudInvoices.ok && !cloudInvoices.empty && Array.isArray(cloudInvoices.data)) {
-                const local = safeGet(STORAGE_KEYS.INVOICES, []);
+                const local = getAllInvoicesRaw();
                 const merged = mergeArraysById(local, cloudInvoices.data);
                 if (JSON.stringify(local) !== JSON.stringify(merged)) {
                     safeSet(STORAGE_KEYS.INVOICES, merged);
@@ -405,12 +443,12 @@ function startRealtimeListeners() {
                     const { page } = getRoute();
                     if (['admin', 'invoices', 'invoice'].includes(page)) {
                         renderCurrentRoute();
-                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — الحذف تام 🪦', 'info');
                     }
                 }
             }
             if (cloudWorkers.ok && !cloudWorkers.empty && Array.isArray(cloudWorkers.data)) {
-                const local = safeGet(STORAGE_KEYS.WORKERS, []);
+                const local = getAllWorkersRaw();
                 const merged = mergeArraysById(local, cloudWorkers.data);
                 if (JSON.stringify(local) !== JSON.stringify(merged)) {
                     safeSet(STORAGE_KEYS.WORKERS, merged);
@@ -418,25 +456,17 @@ function startRealtimeListeners() {
                     const { page } = getRoute();
                     if (['admin', 'workers', 'worker'].includes(page)) {
                         renderCurrentRoute();
-                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — المزامنة تعمل', 'info');
+                        toast('📡 تم تحديث البيانات', 'تم استلام تحديث من جهاز آخر — الحذف تام 🪦', 'info');
                     }
                 }
             }
             if (cloudProfessions.ok && !cloudProfessions.empty && Array.isArray(cloudProfessions.data)) {
-                const local = safeGet(STORAGE_KEYS.PROFESSIONS, null) || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+                const local = getAllProfessionsRaw() || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
                 let merged = mergeArraysById(local, cloudProfessions.data);
-                // 🔥 HARD GUARANTEE — مينفعش الدمج يرجع مصفوفة فارغة للمهن أبداً
                 if ((!merged || !Array.isArray(merged) || merged.length === 0) && Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
                     console.warn('%c⚠️ [AUTO POLL SYNC] merged professions EMPTY → overriding with DEFAULT_PROFESSIONS', 'background:#fd7e14;color:#fff;font-weight:bold;');
                     merged = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
                 }
-                // #region debug-point pollLoop-professions
-                console.group('%c⏰ [DEBUG SYNC] 5-min Poll — Professions', 'background:#e2e3e5;color:#383d41;font-weight:bold;');
-                console.log('local count:', Array.isArray(local) ? local.length : 'N/A');
-                console.log('cloud.data count:', Array.isArray(cloudProfessions.data) ? cloudProfessions.data.length : 'N/A');
-                console.log('merged count after guarantee:', Array.isArray(merged) ? merged.length : 'N/A');
-                console.groupEnd();
-                // #endregion
                 if (JSON.stringify(local) !== JSON.stringify(merged)) {
                     safeSet(STORAGE_KEYS.PROFESSIONS, merged);
                     changed = true;
@@ -760,6 +790,11 @@ function migrateInvoice(inv) {
 }
 
 function getAllInvoices() {
+    // تصفية الـ tombstones (السجلات المحذوفة) — لا تظهر في الواجهة
+    return getAllInvoicesRaw().filter(inv => !(inv && (inv.__tombstone || inv.deletedAt)));
+}
+
+function getAllInvoicesRaw() {
     const raw = safeGet(STORAGE_KEYS.INVOICES, []);
     let anyChanged = false;
     const migrated = raw.map(inv => {
@@ -981,13 +1016,22 @@ function updateInvoice(id, updates) {
 }
 
 function deleteInvoice(id) {
-    const invoices = getAllInvoices();
-    const filtered = invoices.filter(inv => inv.id !== id);
-    const touchNow = new Date().toISOString();
-    filtered.forEach(inv => inv.updatedAt = (inv.updatedAt && new Date(inv.updatedAt).getTime() > new Date(touchNow).getTime()) ? inv.updatedAt : touchNow);
-    saveAllInvoices(filtered);
+    const invoices = getAllInvoicesRaw();
+    const idx = invoices.findIndex(inv => inv.id === id);
+    if (idx === -1) return false;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    // 🪦 TOMBSTONE: ضع علامة حذف (لا تحذف نهائياً الآن — ادفعها للسحابة لتُحذف من كل الأجهزة)
+    invoices[idx] = {
+        ...invoices[idx],
+        __tombstone: true,
+        deletedAt: now,
+        updatedAt: iso
+    };
+    saveAllInvoices(invoices);
 
-    const workers = getAllWorkers();
+    // احذف دفعات هذه الفاتورة من سجلات العمال محلياً أيضاً
+    const workers = getAllWorkersRaw();
     let workersDirty = false;
     workers.forEach(w => {
         if (!Array.isArray(w.payments) || w.payments.length === 0) return;
@@ -1000,7 +1044,7 @@ function deleteInvoice(id) {
     });
     if (workersDirty) saveAllWorkers(workers);
 
-    return filtered.length !== invoices.length;
+    return true;
 }
 
 function migrateInvoiceClientPayments(invoice) {
@@ -1103,6 +1147,11 @@ function getInvoiceShareUrl(invoiceId) {
 // ============================================
 
 function getAllWorkers() {
+    // تصفية الـ tombstones
+    return getAllWorkersRaw().filter(w => !(w && (w.__tombstone || w.deletedAt)));
+}
+
+function getAllWorkersRaw() {
     return safeGet(STORAGE_KEYS.WORKERS, []);
 }
 
@@ -1154,13 +1203,20 @@ function updateWorker(id, updates) {
 }
 
 function deleteWorker(id) {
-    const workers = getAllWorkers();
-    const filtered = workers.filter(w => w.id !== id);
-    // تحديث أحدث timestamp في المصفوفة للتأكيد على الجهاز الحالي أحدث (حتى لو الحذف = أصغر حجماً)
-    const touchNow = new Date().toISOString();
-    filtered.forEach(w => w.updatedAt = (w.updatedAt && new Date(w.updatedAt).getTime() > new Date(touchNow).getTime()) ? w.updatedAt : touchNow);
-    saveAllWorkers(filtered);
-    return filtered.length !== workers.length;
+    const workers = getAllWorkersRaw();
+    const idx = workers.findIndex(w => w.id === id);
+    if (idx === -1) return false;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    // 🪦 TOMBSTONE: ضع علامة حذف
+    workers[idx] = {
+        ...workers[idx],
+        __tombstone: true,
+        deletedAt: now,
+        updatedAt: iso
+    };
+    saveAllWorkers(workers);
+    return true;
 }
 
 function addWorkerPayment(workerId, data) {
@@ -1201,34 +1257,39 @@ function computeWorkerTotals(worker) {
 // PROFESSIONS (الوظائف / المهن) CRUD + Sync
 // ============================================
 function getAllProfessions() {
-    let list = safeGet(STORAGE_KEYS.PROFESSIONS, null);
+    // تصفية الـ tombstones
+    const raw = getAllProfessionsRaw();
+    return _normalizeAndReturnProfessions(raw.filter(p => !(p && (p.__tombstone || p.deletedAt))));
+}
+
+function getAllProfessionsRaw() {
+    return safeGet(STORAGE_KEYS.PROFESSIONS, null);
+}
+
+function _normalizeAndReturnProfessions(list) {
+    // (المساعدة المنطقية المستخرجة من getAllProfessions الأصلي)
     if (!list || !Array.isArray(list) || list.length === 0) {
-        // #region debug-point emptyProfessions-fallbackSeeder
-        console.group('%c⚠️ [DEBUG PROFESSIONS] getAllProfessions — LOCAL EMPTY/CORRUPTED', 'background:#fff3cd;color:#856404;font-weight:bold;');
+        console.group('%c⚠️ [DEBUG PROFESSIONS] _normalizeAndReturnProfessions — EMPTY/CORRUPTED', 'background:#fff3cd;color:#856404;font-weight:bold;');
         console.log('safeGet raw value:', list);
         console.log('DEFAULT_PROFESSIONS count:', Array.isArray(DEFAULT_PROFESSIONS) ? DEFAULT_PROFESSIONS.length : 'NOT_ARRAY');
         if (Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
             console.log('Will RE-SEED storage with DEFAULT_PROFESSIONS:', DEFAULT_PROFESSIONS.map(p => p.name).join('، '));
         }
         console.groupEnd();
-        // #endregion
         list = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
         try { saveAllProfessions(list); } catch(e1) { try { safeSet(STORAGE_KEYS.PROFESSIONS, list); } catch(e2) {} }
     }
-    // 🔥 HARD GUARANTEE — إذا كانت المصفوفة لسه فارغة بعد كل هذا → نعيد الـ DEFAULT بالقوة بدون أي تخزين حتى لا تتعطل القائمة أبداً
     if (!list || !Array.isArray(list) || list.length === 0) {
         if (Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
-            console.warn('%c🚨 [CRITICAL FALLBACK] getAllProfessions returning DEFAULT directly because storage repeatedly returned empty!', 'background:#dc3545;color:#fff;font-weight:bold;');
+            console.warn('%c🚨 [CRITICAL FALLBACK] returning DEFAULT directly because storage repeatedly returned empty!', 'background:#dc3545;color:#fff;font-weight:bold;');
             list = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
         }
     }
     const sorted = list.slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    // #region debug-point getAllProfessions-result
-    console.group('%c✅ [DEBUG PROFESSIONS] getAllProfessions RETURN', 'background:#d4edda;color:#155724;font-weight:bold;');
+    console.group('%c✅ [DEBUG PROFESSIONS] _normalizeAndReturnProfessions RETURN', 'background:#d4edda;color:#155724;font-weight:bold;');
     console.log('Count returned:', sorted.length);
     sorted.forEach((p, i) => console.log(`  [${i+1}] id=${p.id} | name="${p.name}" | order=${p.order}`));
     console.groupEnd();
-    // #endregion
     return sorted;
 }
 
@@ -1279,12 +1340,20 @@ function updateProfession(id, updates) {
 }
 
 function deleteProfession(id) {
-    const profs = getAllProfessions();
-    const filtered = profs.filter(p => p.id !== id);
-    const touchNow = new Date().toISOString();
-    filtered.forEach(p => p.updatedAt = (p.updatedAt && new Date(p.updatedAt).getTime() > new Date(touchNow).getTime()) ? p.updatedAt : touchNow);
-    saveAllProfessions(filtered);
-    return filtered.length !== profs.length;
+    const profs = getAllProfessionsRaw();
+    const idx = profs.findIndex(p => p.id === id);
+    if (idx === -1) return false;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    // 🪦 TOMBSTONE: ضع علامة حذف
+    profs[idx] = {
+        ...profs[idx],
+        __tombstone: true,
+        deletedAt: now,
+        updatedAt: iso
+    };
+    saveAllProfessions(profs);
+    return true;
 }
 
 function reorderProfession(id, direction) {
