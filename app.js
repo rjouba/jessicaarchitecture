@@ -10,8 +10,21 @@ const STORAGE_KEYS = {
     INVOICES: 'jk_invoices',
     AUTH: 'jk_admin_auth',
     ADMIN_CREDENTIALS: 'jk_admin_creds',
-    WORKERS: 'jk_workers'
+    WORKERS: 'jk_workers',
+    PROFESSIONS: 'jk_professions'
 };
+
+const DEFAULT_PROFESSIONS = [
+    { id: 'p_najjar',    name: 'النجار',         order: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_hajar',     name: 'معلم الحجر',    order: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_alum',      name: 'الالمنيوم',      order: 3, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_dehan',     name: 'الدهان',         order: 4, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_keh',       name: 'الكهربائي',      order: 5, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_sehhi',     name: 'الصحية',         order: 6, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_rikham',    name: 'منشرة الرخام',   order: 7, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_nattur',    name: 'الناطور',        order: 8, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'p_sabb',      name: 'معلم الصب',      order: 9, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+];
 
 const DEFAULT_ADMIN_USERNAME = 'jessica';
 const DEFAULT_ADMIN_PASSWORD = 'hussein';
@@ -29,7 +42,7 @@ let FIREBASE_ENABLED = false;
 let SYNC_INITIALIZED = false;
 let LAST_SYNC_STATUS = 'جارِ التحقق من الاتصال بالسحابة...';
 let POLLING_HANDLE = null;
-let LAST_POLL_TS = { invoices: 0, workers: 0 };
+let LAST_POLL_TS = { invoices: 0, workers: 0, professions: 0 };
 
 function getFirestoreBase() {
     const pid = (FIREBASE_CONFIG && FIREBASE_CONFIG.projectId) || '';
@@ -307,34 +320,55 @@ async function forceSyncNow(showToast = true) {
         return false;
     }
     try {
-        const [cloudInvoices, cloudWorkers] = await Promise.all([
+        const [cloudInvoices, cloudWorkers, cloudProfessions] = await Promise.all([
             cloudRead('app_data', STORAGE_KEYS.INVOICES),
-            cloudRead('app_data', STORAGE_KEYS.WORKERS)
+            cloudRead('app_data', STORAGE_KEYS.WORKERS),
+            cloudRead('app_data', STORAGE_KEYS.PROFESSIONS)
         ]);
         const localInvoices = safeGet(STORAGE_KEYS.INVOICES, []);
         const localWorkers = safeGet(STORAGE_KEYS.WORKERS, []);
+        const localProfessions = safeGet(STORAGE_KEYS.PROFESSIONS, null) || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
         const mergedInvoices = mergeArraysById(localInvoices, cloudInvoices.data || []);
         const mergedWorkers = mergeArraysById(localWorkers, cloudWorkers.data || []);
+        let mergedProfessions = mergeArraysById(localProfessions, cloudProfessions.data || []);
+        // 🔥 HARD GUARANTEE — إذا كانت نتيجة الدمج للمهن فارغة والـ DEFAULT موجودة → نستعيد الـ DEFAULT ولا نسمح بمصفوفة فارغة أبداً
+        if ((!mergedProfessions || !Array.isArray(mergedProfessions) || mergedProfessions.length === 0) && Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
+            console.warn('%c⚠️ [FORCE SYNC] mergedProfessions was EMPTY after merge → overriding with DEFAULT_PROFESSIONS to avoid data loss!', 'background:#fd7e14;color:#fff;font-weight:bold;');
+            mergedProfessions = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+        }
+        // #region debug-point forceSyncNow-professions
+        console.group('%c🔄 [DEBUG SYNC] forceSyncNow — Professions merge summary', 'background:#e2e3e5;color:#383d41;font-weight:bold;');
+        console.log('localProfessions count (before):', Array.isArray(localProfessions) ? localProfessions.length : 'N/A');
+        console.log('cloudProfessions.data count (cloud):', (cloudProfessions.ok && Array.isArray(cloudProfessions.data)) ? cloudProfessions.data.length : 'N/A');
+        console.log('mergedProfessions count (after):', Array.isArray(mergedProfessions) ? mergedProfessions.length : 'N/A');
+        console.log('cloudPrfEmpty flag (so we will seed cloud):', cloudPrfEmpty);
+        console.groupEnd();
+        // #endregion
         const invChanged = JSON.stringify(localInvoices) !== JSON.stringify(mergedInvoices);
         const wrkChanged = JSON.stringify(localWorkers) !== JSON.stringify(mergedWorkers);
+        const prfChanged = JSON.stringify(localProfessions) !== JSON.stringify(mergedProfessions);
         const cloudInvEmpty = !cloudInvoices.ok || cloudInvoices.empty || !Array.isArray(cloudInvoices.data) || cloudInvoices.data.length === 0;
         const cloudWrkEmpty = !cloudWorkers.ok || cloudWorkers.empty || !Array.isArray(cloudWorkers.data) || cloudWorkers.data.length === 0;
+        const cloudPrfEmpty = !cloudProfessions.ok || cloudProfessions.empty || !Array.isArray(cloudProfessions.data) || cloudProfessions.data.length === 0;
         if (invChanged || cloudInvEmpty) safeSet(STORAGE_KEYS.INVOICES, mergedInvoices);
         if (wrkChanged || cloudWrkEmpty) safeSet(STORAGE_KEYS.WORKERS, mergedWorkers);
+        if (prfChanged || cloudPrfEmpty) safeSet(STORAGE_KEYS.PROFESSIONS, mergedProfessions);
         await Promise.all([
             cloudWrite('app_data', STORAGE_KEYS.INVOICES, safeGet(STORAGE_KEYS.INVOICES, [])),
-            cloudWrite('app_data', STORAGE_KEYS.WORKERS, safeGet(STORAGE_KEYS.WORKERS, []))
+            cloudWrite('app_data', STORAGE_KEYS.WORKERS, safeGet(STORAGE_KEYS.WORKERS, [])),
+            cloudWrite('app_data', STORAGE_KEYS.PROFESSIONS, safeGet(STORAGE_KEYS.PROFESSIONS, []))
         ]);
         LAST_POLL_TS.invoices = Date.now();
         LAST_POLL_TS.workers = Date.now();
-        LAST_SYNC_STATUS = `✅ تمت المزامنة — ${safeGet(STORAGE_KEYS.INVOICES, []).length} فاتورة + ${safeGet(STORAGE_KEYS.WORKERS, []).length} عامل`;
+        LAST_POLL_TS.professions = Date.now();
+        LAST_SYNC_STATUS = `✅ تمت المزامنة — ${safeGet(STORAGE_KEYS.INVOICES, []).length} فاتورة + ${safeGet(STORAGE_KEYS.WORKERS, []).length} عامل + ${safeGet(STORAGE_KEYS.PROFESSIONS, []).length} وظيفة`;
         if (showToast) {
-            const total = safeGet(STORAGE_KEYS.INVOICES, []).length + safeGet(STORAGE_KEYS.WORKERS, []).length;
+            const total = safeGet(STORAGE_KEYS.INVOICES, []).length + safeGet(STORAGE_KEYS.WORKERS, []).length + safeGet(STORAGE_KEYS.PROFESSIONS, []).length;
             toast('✅ تمت المزامنة', `يوجد حالياً ${total} سجل متزامن على جميع الأجهزة`, 'success');
         }
         try {
             const { page } = getRoute();
-            if (['admin', 'invoices', 'workers', 'invoice', 'worker'].includes(page)) renderCurrentRoute();
+            if (['admin', 'invoices', 'workers', 'invoice', 'worker', 'professions'].includes(page)) renderCurrentRoute();
         } catch (e) {}
         if (!SYNC_INITIALIZED) startRealtimeListeners();
         return true;
@@ -354,9 +388,10 @@ function startRealtimeListeners() {
     POLLING_HANDLE = setInterval(async () => {
         if (!FIREBASE_ENABLED) return;
         try {
-            const [cloudInvoices, cloudWorkers] = await Promise.all([
+            const [cloudInvoices, cloudWorkers, cloudProfessions] = await Promise.all([
                 cloudRead('app_data', STORAGE_KEYS.INVOICES),
-                cloudRead('app_data', STORAGE_KEYS.WORKERS)
+                cloudRead('app_data', STORAGE_KEYS.WORKERS),
+                cloudRead('app_data', STORAGE_KEYS.PROFESSIONS)
             ]);
             let changed = false;
             if (cloudInvoices.ok && !cloudInvoices.empty && Array.isArray(cloudInvoices.data)) {
@@ -385,7 +420,31 @@ function startRealtimeListeners() {
                     }
                 }
             }
-            if (changed) { LAST_POLL_TS.invoices = Date.now(); LAST_POLL_TS.workers = Date.now(); }
+            if (cloudProfessions.ok && !cloudProfessions.empty && Array.isArray(cloudProfessions.data)) {
+                const local = safeGet(STORAGE_KEYS.PROFESSIONS, null) || JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+                let merged = mergeArraysById(local, cloudProfessions.data);
+                // 🔥 HARD GUARANTEE — مينفعش الدمج يرجع مصفوفة فارغة للمهن أبداً
+                if ((!merged || !Array.isArray(merged) || merged.length === 0) && Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
+                    console.warn('%c⚠️ [AUTO POLL SYNC] merged professions EMPTY → overriding with DEFAULT_PROFESSIONS', 'background:#fd7e14;color:#fff;font-weight:bold;');
+                    merged = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+                }
+                // #region debug-point pollLoop-professions
+                console.group('%c⏰ [DEBUG SYNC] 5-min Poll — Professions', 'background:#e2e3e5;color:#383d41;font-weight:bold;');
+                console.log('local count:', Array.isArray(local) ? local.length : 'N/A');
+                console.log('cloud.data count:', Array.isArray(cloudProfessions.data) ? cloudProfessions.data.length : 'N/A');
+                console.log('merged count after guarantee:', Array.isArray(merged) ? merged.length : 'N/A');
+                console.groupEnd();
+                // #endregion
+                if (JSON.stringify(local) !== JSON.stringify(merged)) {
+                    safeSet(STORAGE_KEYS.PROFESSIONS, merged);
+                    changed = true;
+                    const { page } = getRoute();
+                    if (['admin', 'professions'].includes(page)) {
+                        renderCurrentRoute();
+                    }
+                }
+            }
+            if (changed) { LAST_POLL_TS.invoices = Date.now(); LAST_POLL_TS.workers = Date.now(); LAST_POLL_TS.professions = Date.now(); }
             LAST_POLL_TS.lastAutoSync = Date.now();
             console.log('🔄 Auto-sync (كل 5 دقائق) مكتمل:', new Date().toLocaleTimeString('ar-EG'));
         } catch (e) {
@@ -509,6 +568,11 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// آمنة للاستخدام داخل سمات HTML (مثل value="...") — تستعمل escapeHtml نفس منطقها
+function escapeAttr(str) {
+    return escapeHtml(str);
+}
+
 // ============================================
 // Toast Notifications
 // ============================================
@@ -630,27 +694,62 @@ function migrateInvoice(inv) {
         delete inv.agreedAmount;
         changed = true;
     }
-    if (Array.isArray(inv.payments)) {
-        inv.payments = inv.payments.map(p => {
-            if (p.amount !== undefined && p.amountSYP === undefined) {
-                return {
-                    ...p,
-                    amountSYP: Number(p.amount) || 0,
-                    amountUSD: 0,
-                    craftsmanType: p.craftsmanType || ''
-                };
-            }
-            if (p.craftsmanType === undefined) {
-                return { ...p, craftsmanType: '' };
-            }
-            return p;
+    if (!Array.isArray(inv.clientPayments)) inv.clientPayments = [];
+    // ===== Retrocompat: نقل old top-level payments (الحرفيين القديمة) إلى nested داخل أولى دفعة مستلمة =====
+    const legacyPayments = Array.isArray(inv.payments) ? inv.payments.filter(Boolean) : [];
+    // ===== Retrocompat: نقل old top-level materials (المواد القديمة) إلى nested داخل أولى دفعة مستلمة =====
+    const legacyMaterials = Array.isArray(inv.materials) ? inv.materials.filter(Boolean) : [];
+    const hasLegacy = legacyPayments.length > 0 || legacyMaterials.length > 0;
+    if (hasLegacy) {
+        let targetCpay = inv.clientPayments.find(cp => (Array.isArray(cp.craftsmen) && cp.craftsmen.length === 0) || (Array.isArray(cp.materials) && cp.materials.length === 0));
+        if (!targetCpay && inv.clientPayments.length > 0) targetCpay = inv.clientPayments[0];
+        if (!targetCpay) {
+            targetCpay = {
+                id: generateId('cpay'),
+                amountSYP: (legacyPayments.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0)) + (legacyMaterials.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0)),
+                amountUSD: (legacyPayments.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0)) + (legacyMaterials.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0)),
+                materialName: 'مستلمة محولة من البيانات القديمة',
+                date: new Date().toISOString().slice(0, 10),
+                craftsmen: [],
+                materials: []
+            };
+            inv.clientPayments.push(targetCpay);
+        }
+        if (!Array.isArray(targetCpay.craftsmen)) targetCpay.craftsmen = [];
+        if (!Array.isArray(targetCpay.materials)) targetCpay.materials = [];
+        legacyPayments.forEach(lp => {
+            targetCpay.craftsmen.push({
+                id: lp.id || generateId('ncraft'),
+                amountSYP: Number(lp.amountSYP) || 0,
+                amountUSD: Number(lp.amountUSD) || 0,
+                craftsmanType: lp.craftsmanType || '',
+                craftsmanName: lp.craftsmanName || '',
+                description: lp.description || '',
+                date: lp.date || new Date().toISOString().slice(0, 10)
+            });
         });
+        legacyMaterials.forEach(lm => {
+            targetCpay.materials.push({
+                id: lm.id || generateId('nmat'),
+                amountSYP: Number(lm.amountSYP) || 0,
+                amountUSD: Number(lm.amountUSD) || 0,
+                materialName: lm.materialName || lm.name || '',
+                date: lm.date || new Date().toISOString().slice(0, 10)
+            });
+        });
+        delete inv.payments;
+        delete inv.materials;
         changed = true;
     }
-    if (!Array.isArray(inv.materials)) {
-        inv.materials = [];
-        changed = true;
-    }
+    // التأكد من أن كل دفعة لديها craftsmen + materials كمصفوفات (حتى الفارغة)
+    inv.clientPayments = inv.clientPayments.map(cp => {
+        let c = { ...cp };
+        let innerChanged = false;
+        if (!Array.isArray(c.craftsmen)) { c.craftsmen = []; innerChanged = true; }
+        if (!Array.isArray(c.materials)) { c.materials = []; innerChanged = true; }
+        if (innerChanged) changed = true;
+        return c;
+    });
     if (!Array.isArray(inv.sitePhotos)) {
         inv.sitePhotos = [];
         changed = true;
@@ -693,6 +792,73 @@ function getInvoiceById(id) {
 
 function createInvoice(data) {
     const invoices = getAllInvoices();
+
+    // 1. إعداد clientPayments مع nested craftsmen/materials لكل دفعة
+    let clientPayments = Array.isArray(data.clientPayments) ? [...data.clientPayments] : [];
+    clientPayments = clientPayments.map(cp => ({
+        id: cp.id || generateId('cpay'),
+        amountSYP: Number(cp.amountSYP) || 0,
+        amountUSD: Number(cp.amountUSD) || 0,
+        materialName: cp.materialName || '',
+        note: cp.note || '',
+        date: cp.date || todayStr(),
+        craftsmen: Array.isArray(cp.craftsmen) ? cp.craftsmen.map(c => ({
+            id: c.id || generateId('ncraft'),
+            amountSYP: Number(c.amountSYP) || 0,
+            amountUSD: Number(c.amountUSD) || 0,
+            craftsmanType: c.craftsmanType || '',
+            craftsmanName: c.craftsmanName || '',
+            description: c.description || '',
+            date: c.date || todayStr()
+        })) : [],
+        materials: Array.isArray(cp.materials) ? cp.materials.map(m => ({
+            id: m.id || generateId('nmat'),
+            amountSYP: Number(m.amountSYP) || 0,
+            amountUSD: Number(m.amountUSD) || 0,
+            materialName: m.materialName || '',
+            date: m.date || todayStr()
+        })) : []
+    }));
+
+    // 2. Retrocompat: إذا جاءت payments (الحرفيين) بشكل flat مستقل → ندمجها داخل أولى clientPayment
+    const flatPayments = Array.isArray(data.payments) ? data.payments : [];
+    const flatMaterials = Array.isArray(data.materials) ? data.materials : [];
+    if (flatPayments.length > 0 || flatMaterials.length > 0) {
+        if (clientPayments.length === 0) {
+            clientPayments.push({
+                id: generateId('cpay'),
+                amountSYP: 0,
+                amountUSD: 0,
+                materialName: '',
+                note: '',
+                date: todayStr(),
+                craftsmen: [],
+                materials: []
+            });
+        }
+        const target = clientPayments[0];
+        flatPayments.forEach(p => {
+            target.craftsmen.push({
+                id: p.id || generateId('ncraft'),
+                amountSYP: Number(p.amountSYP) || 0,
+                amountUSD: Number(p.amountUSD) || 0,
+                craftsmanType: p.craftsmanType || '',
+                craftsmanName: p.craftsmanName || '',
+                description: p.description || '',
+                date: p.date || todayStr()
+            });
+        });
+        flatMaterials.forEach(m => {
+            target.materials.push({
+                id: m.id || generateId('nmat'),
+                amountSYP: Number(m.amountSYP) || 0,
+                amountUSD: Number(m.amountUSD) || 0,
+                materialName: m.materialName || '',
+                date: m.date || todayStr()
+            });
+        });
+    }
+
     const newInvoice = {
         id: generateId(),
         customerName: data.customerName || '',
@@ -700,29 +866,9 @@ function createInvoice(data) {
         agreedAmountUSD: Number(data.agreedAmountUSD) || 0,
         createdAt: data.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        clientPayments: Array.isArray(data.clientPayments) ? data.clientPayments.map(cp => ({
-            id: generateId('cpay'),
-            amountSYP: Number(cp.amountSYP) || 0,
-            amountUSD: Number(cp.amountUSD) || 0,
-            materialName: cp.materialName || '',
-            date: cp.date || todayStr()
-        })) : [],
-        payments: Array.isArray(data.payments) ? data.payments.map(p => ({
-            id: generateId('pay'),
-            amountSYP: Number(p.amountSYP) || 0,
-            amountUSD: Number(p.amountUSD) || 0,
-            description: p.description || '',
-            craftsmanType: p.craftsmanType || '',
-            craftsmanName: p.craftsmanName || '',
-            date: p.date || todayStr()
-        })) : [],
-        materials: Array.isArray(data.materials) ? data.materials.map(m => ({
-            id: generateId('mat'),
-            amountSYP: Number(m.amountSYP) || 0,
-            amountUSD: Number(m.amountUSD) || 0,
-            materialName: m.materialName || '',
-            date: m.date || todayStr()
-        })) : [],
+        clientPayments,
+        payments: [],  // تفريغ نهائي للمصفوفة القديمة
+        materials: [], // تفريغ نهائي للمصفوفة القديمة
         sitePhotos: Array.isArray(data.sitePhotos) ? data.sitePhotos : []
     };
 
@@ -740,52 +886,90 @@ function updateInvoice(id, updates) {
     if (updates.customerName !== undefined) inv.customerName = updates.customerName;
     if (updates.agreedAmountSYP !== undefined) inv.agreedAmountSYP = Number(updates.agreedAmountSYP) || 0;
     if (updates.agreedAmountUSD !== undefined) inv.agreedAmountUSD = Number(updates.agreedAmountUSD) || 0;
-    if (updates.payments !== undefined) {
-        inv.payments = updates.payments.map(p => {
-            if (p.id) return {
-                ...p,
-                amountSYP: Number(p.amountSYP) || 0,
-                amountUSD: Number(p.amountUSD) || 0
-            };
-            return {
-                id: generateId('pay'),
-                amountSYP: Number(p.amountSYP) || 0,
-                amountUSD: Number(p.amountUSD) || 0,
-                description: p.description || '',
-                craftsmanType: p.craftsmanType || '',
-                craftsmanName: p.craftsmanName || '',
-                date: p.date || todayStr()
-            };
-        });
-    }
+
+    // ===== clientPayments مع nested craftsmen/materials =====
     if (updates.clientPayments !== undefined) {
         inv.clientPayments = updates.clientPayments.map(cp => {
-            if (cp.id) return {
-                ...cp,
-                amountSYP: Number(cp.amountSYP) || 0,
-                amountUSD: Number(cp.amountUSD) || 0
-            };
+            const base = cp.id ? { ...cp } : { id: generateId('cpay') };
             return {
-                id: generateId('cpay'),
+                ...base,
+                id: base.id,
                 amountSYP: Number(cp.amountSYP) || 0,
                 amountUSD: Number(cp.amountUSD) || 0,
                 materialName: cp.materialName || '',
-                date: cp.date || todayStr()
+                note: cp.note || '',
+                date: cp.date || todayStr(),
+                craftsmen: Array.isArray(cp.craftsmen) ? cp.craftsmen.map(c => ({
+                    id: c.id || generateId('ncraft'),
+                    amountSYP: Number(c.amountSYP) || 0,
+                    amountUSD: Number(c.amountUSD) || 0,
+                    craftsmanType: c.craftsmanType || '',
+                    craftsmanName: c.craftsmanName || '',
+                    description: c.description || '',
+                    date: c.date || todayStr()
+                })) : (Array.isArray(base.craftsmen) ? base.craftsmen : []),
+                materials: Array.isArray(cp.materials) ? cp.materials.map(m => ({
+                    id: m.id || generateId('nmat'),
+                    amountSYP: Number(m.amountSYP) || 0,
+                    amountUSD: Number(m.amountUSD) || 0,
+                    materialName: m.materialName || '',
+                    date: m.date || todayStr()
+                })) : (Array.isArray(base.materials) ? base.materials : [])
             };
         });
     }
-    if (updates.materials !== undefined) {
-        inv.materials = updates.materials.map(m => {
-            if (m.id) return { ...m, amountSYP: Number(m.amountSYP) || 0, amountUSD: Number(m.amountUSD) || 0 };
-            return {
-                id: generateId('mat'),
-                amountSYP: Number(m.amountSYP) || 0,
-                amountUSD: Number(m.amountUSD) || 0,
-                materialName: m.materialName || '',
-                date: m.date || todayStr()
-            };
-        });
+
+    // ===== Retrocompat: flat payments + flat materials → دمجها في أولى clientPayment =====
+    const flatPayments = Array.isArray(updates.payments) ? updates.payments : null;
+    const flatMaterials = Array.isArray(updates.materials) ? updates.materials : null;
+
+    if (flatPayments || flatMaterials) {
+        if (!Array.isArray(inv.clientPayments)) inv.clientPayments = [];
+        if (inv.clientPayments.length === 0) {
+            inv.clientPayments.push({
+                id: generateId('cpay'),
+                amountSYP: 0,
+                amountUSD: 0,
+                materialName: '',
+                note: '',
+                date: todayStr(),
+                craftsmen: [],
+                materials: []
+            });
+        }
+        const target = inv.clientPayments[0];
+        if (!Array.isArray(target.craftsmen)) target.craftsmen = [];
+        if (!Array.isArray(target.materials)) target.materials = [];
+        if (flatPayments) {
+            flatPayments.forEach(p => {
+                target.craftsmen.push({
+                    id: p.id || generateId('ncraft'),
+                    amountSYP: Number(p.amountSYP) || 0,
+                    amountUSD: Number(p.amountUSD) || 0,
+                    craftsmanType: p.craftsmanType || '',
+                    craftsmanName: p.craftsmanName || '',
+                    description: p.description || '',
+                    date: p.date || todayStr()
+                });
+            });
+        }
+        if (flatMaterials) {
+            flatMaterials.forEach(m => {
+                target.materials.push({
+                    id: m.id || generateId('nmat'),
+                    amountSYP: Number(m.amountSYP) || 0,
+                    amountUSD: Number(m.amountUSD) || 0,
+                    materialName: m.materialName || '',
+                    date: m.date || todayStr()
+                });
+            });
+        }
     }
+
+    // تفريغ نهائي للمصفوفات القديمة على مستوى الفاتورة
+    inv.payments = [];
+    inv.materials = [];
+
     if (updates.sitePhotos !== undefined) inv.sitePhotos = updates.sitePhotos;
     inv.updatedAt = new Date().toISOString();
 
@@ -797,10 +981,23 @@ function updateInvoice(id, updates) {
 function deleteInvoice(id) {
     const invoices = getAllInvoices();
     const filtered = invoices.filter(inv => inv.id !== id);
-    // تحديث أحدث timestamp في المصفوفة للتأكيد على الجهاز الحالي أحدث (حتى لو الحذف = أصغر حجماً)
     const touchNow = new Date().toISOString();
     filtered.forEach(inv => inv.updatedAt = (inv.updatedAt && new Date(inv.updatedAt).getTime() > new Date(touchNow).getTime()) ? inv.updatedAt : touchNow);
     saveAllInvoices(filtered);
+
+    const workers = getAllWorkers();
+    let workersDirty = false;
+    workers.forEach(w => {
+        if (!Array.isArray(w.payments) || w.payments.length === 0) return;
+        const before = w.payments.length;
+        w.payments = w.payments.filter(p => p.invoiceId !== id);
+        if (w.payments.length !== before) {
+            w.updatedAt = new Date().toISOString();
+            workersDirty = true;
+        }
+    });
+    if (workersDirty) saveAllWorkers(workers);
+
     return filtered.length !== invoices.length;
 }
 
@@ -851,15 +1048,36 @@ function migrateInvoiceClientPayments(invoice) {
 }
 
 function computeInvoiceTotals(invoice) {
-    const clientPayments = (invoice.clientPayments && invoice.clientPayments.length)
-        ? invoice.clientPayments
-        : (invoice.payments || []).filter(p => !p.craftsmanType && !p.craftsmanName);
-    const totalReceivedSYP = (clientPayments || []).reduce((sum, p) => sum + (Number(p.amountSYP) || 0), 0);
-    const totalReceivedUSD = (clientPayments || []).reduce((sum, p) => sum + (Number(p.amountUSD) || 0), 0);
+    // حساب المجاميع من الهيكل الجديد: nested craftsmen + materials داخل كل clientPayment
+    const clientPayments = Array.isArray(invoice.clientPayments) ? invoice.clientPayments : [];
+
+    // المستلم من العميل: المستحق المباشر للدفعات
+    const totalReceivedSYP = clientPayments.reduce((sum, p) => sum + (Number(p.amountSYP) || 0), 0);
+    const totalReceivedUSD = clientPayments.reduce((sum, p) => sum + (Number(p.amountUSD) || 0), 0);
+
+    // المتبقي
     const remainingSYP = Math.max(0, (Number(invoice.agreedAmountSYP) || 0) - totalReceivedSYP);
     const remainingUSD = Math.max(0, (Number(invoice.agreedAmountUSD) || 0) - totalReceivedUSD);
-    const totalMaterialsSYP = (invoice.materials || []).reduce((sum, m) => sum + (Number(m.amountSYP) || 0), 0);
-    const totalMaterialsUSD = (invoice.materials || []).reduce((sum, m) => sum + (Number(m.amountUSD) || 0), 0);
+
+    // المواد والمستلزمات: مجموع nested materials عبر كل الدفعات
+    let totalMaterialsSYP = 0;
+    let totalMaterialsUSD = 0;
+    clientPayments.forEach(cp => {
+        if (Array.isArray(cp.materials)) {
+            cp.materials.forEach(m => {
+                totalMaterialsSYP += Number(m.amountSYP) || 0;
+                totalMaterialsUSD += Number(m.amountUSD) || 0;
+            });
+        }
+    });
+
+    // Retrocompat fallback: لو لسه فيه بيانات قديمة top-level (قبل أن ينظفها migrateInvoice)
+    const legacyMaterials = Array.isArray(invoice.materials) ? invoice.materials : [];
+    if (legacyMaterials.length > 0 && totalMaterialsSYP === 0 && totalMaterialsUSD === 0) {
+        totalMaterialsSYP = legacyMaterials.reduce((sum, m) => sum + (Number(m.amountSYP) || 0), 0);
+        totalMaterialsUSD = legacyMaterials.reduce((sum, m) => sum + (Number(m.amountUSD) || 0), 0);
+    }
+
     return { totalReceivedSYP, totalReceivedUSD, remainingSYP, remainingUSD, totalMaterialsSYP, totalMaterialsUSD };
 }
 
@@ -978,6 +1196,208 @@ function computeWorkerTotals(worker) {
 }
 
 // ============================================
+// PROFESSIONS (الوظائف / المهن) CRUD + Sync
+// ============================================
+function getAllProfessions() {
+    let list = safeGet(STORAGE_KEYS.PROFESSIONS, null);
+    if (!list || !Array.isArray(list) || list.length === 0) {
+        // #region debug-point emptyProfessions-fallbackSeeder
+        console.group('%c⚠️ [DEBUG PROFESSIONS] getAllProfessions — LOCAL EMPTY/CORRUPTED', 'background:#fff3cd;color:#856404;font-weight:bold;');
+        console.log('safeGet raw value:', list);
+        console.log('DEFAULT_PROFESSIONS count:', Array.isArray(DEFAULT_PROFESSIONS) ? DEFAULT_PROFESSIONS.length : 'NOT_ARRAY');
+        if (Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
+            console.log('Will RE-SEED storage with DEFAULT_PROFESSIONS:', DEFAULT_PROFESSIONS.map(p => p.name).join('، '));
+        }
+        console.groupEnd();
+        // #endregion
+        list = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+        try { saveAllProfessions(list); } catch(e1) { try { safeSet(STORAGE_KEYS.PROFESSIONS, list); } catch(e2) {} }
+    }
+    // 🔥 HARD GUARANTEE — إذا كانت المصفوفة لسه فارغة بعد كل هذا → نعيد الـ DEFAULT بالقوة بدون أي تخزين حتى لا تتعطل القائمة أبداً
+    if (!list || !Array.isArray(list) || list.length === 0) {
+        if (Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
+            console.warn('%c🚨 [CRITICAL FALLBACK] getAllProfessions returning DEFAULT directly because storage repeatedly returned empty!', 'background:#dc3545;color:#fff;font-weight:bold;');
+            list = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+        }
+    }
+    const sorted = list.slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    // #region debug-point getAllProfessions-result
+    console.group('%c✅ [DEBUG PROFESSIONS] getAllProfessions RETURN', 'background:#d4edda;color:#155724;font-weight:bold;');
+    console.log('Count returned:', sorted.length);
+    sorted.forEach((p, i) => console.log(`  [${i+1}] id=${p.id} | name="${p.name}" | order=${p.order}`));
+    console.groupEnd();
+    // #endregion
+    return sorted;
+}
+
+function saveAllProfessions(profs) {
+    safeSet(STORAGE_KEYS.PROFESSIONS, profs);
+    (async () => {
+        if (!(FIREBASE_ENABLED || firebaseConfigValid())) return;
+        for (let i = 0; i < 3; i++) {
+            const ok = await cloudWrite('app_data', STORAGE_KEYS.PROFESSIONS, profs);
+            if (ok) break;
+            await new Promise(r => setTimeout(r, 200 * (i + 1)));
+        }
+    })();
+}
+
+function getProfessionById(id) {
+    return getAllProfessions().find(p => p.id === id) || null;
+}
+
+function createProfession(data) {
+    const profs = getAllProfessions();
+    const newProf = {
+        id: data.id || generateId('prf'),
+        name: (data.name || '').trim(),
+        order: Number(data.order) || (profs.length > 0 ? (Math.max(...profs.map(x => Number(x.order) || 0)) + 1) : 1),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    };
+    if (!newProf.name) return null;
+    if (profs.some(x => x.name === newProf.name)) {
+        toast('اسم مكرر', 'هناك وظيفة بنفس الاسم موجودة من قبل', 'warning');
+        return null;
+    }
+    profs.push(newProf);
+    saveAllProfessions(profs);
+    return newProf;
+}
+
+function updateProfession(id, updates) {
+    const profs = getAllProfessions();
+    const idx = profs.findIndex(p => p.id === id);
+    if (idx === -1) return null;
+    if (updates.name !== undefined) profs[idx].name = (updates.name + '').trim();
+    if (updates.order !== undefined) profs[idx].order = Number(updates.order);
+    profs[idx].updatedAt = new Date().toISOString();
+    saveAllProfessions(profs);
+    return profs[idx];
+}
+
+function deleteProfession(id) {
+    const profs = getAllProfessions();
+    const filtered = profs.filter(p => p.id !== id);
+    const touchNow = new Date().toISOString();
+    filtered.forEach(p => p.updatedAt = (p.updatedAt && new Date(p.updatedAt).getTime() > new Date(touchNow).getTime()) ? p.updatedAt : touchNow);
+    saveAllProfessions(filtered);
+    return filtered.length !== profs.length;
+}
+
+function reorderProfession(id, direction) {
+    const profs = getAllProfessions();
+    const sorted = profs.slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    const idx = sorted.findIndex(p => p.id === id);
+    if (idx === -1) return false;
+    const target = direction === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= sorted.length) return false;
+    const a = sorted[idx].order;
+    sorted[idx].order = sorted[target].order;
+    sorted[target].order = a;
+    const now = new Date().toISOString();
+    sorted[idx].updatedAt = now;
+    sorted[target].updatedAt = now;
+    saveAllProfessions(sorted);
+    return true;
+}
+
+function getProfessionSelectHtml(selectedName, extraAttrs, includeOther) {
+    try {
+        let profs;
+        try { profs = getAllProfessions(); } catch(e1) {
+            try { profs = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS)); } catch(e2) { profs = []; }
+        }
+        if (!Array.isArray(profs)) profs = [];
+        // #region debug-point getProfessionSelectHtml-preCheck
+        console.group('%c🔍 [DEBUG PROFESSIONS] getProfessionSelectHtml PRE-CHECK', 'background:#cce5ff;color:#004085;font-weight:bold;');
+        console.log('getAllProfessions returned count:', profs.length);
+        console.log('selectedName argument:', selectedName);
+        console.log('includeOther:', includeOther);
+        if (profs.length > 0) console.log('First 3 names:', profs.slice(0,3).map(p=>p.name).join('، '));
+        console.groupEnd();
+        // #endregion
+        // 🔥🔥🔥 ABSOLUTE FINAL GUARANTEE — مينفعش نخسر هنا تحت أي ظرف
+        // لو عدد المهن = 0 في أي مرحلة → نأخذ DEFAULT_PROFESSIONS بالقوة ونتجاهل أي شيء تاني، ونحفظهم فوراً للتخزين والسحابة
+        if (profs.length === 0 && Array.isArray(DEFAULT_PROFESSIONS) && DEFAULT_PROFESSIONS.length > 0) {
+            console.group('%c🚨🚨🚨 [GUARANTEE TRIGGERED] FINAL FALLBACK IN getProfessionSelectHtml', 'background:#dc3545;color:#fff;font-weight:bold;font-size:14px;');
+            console.warn('profs.length was 0 even after getAllProfessions() — injecting DEFAULT_PROFESSIONS BY FORCE right now!');
+            console.warn('DEFAULT_PROFESSIONS items:', DEFAULT_PROFESSIONS.map(p => `${p.name}(order=${p.order})`).join(' | '));
+            console.groupEnd();
+            profs = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
+            // حفظ فوري وعدم انتظار أي مزامنة
+            try { saveAllProfessions(profs); } catch(guaranteeErr1) {
+                try { safeSet(STORAGE_KEYS.PROFESSIONS, profs); } catch(guaranteeErr2) {
+                    // حتى لو فشل التخزين، نكمل على الأقل لعرض القائمة في واجهة المستخدم حالياً
+                }
+            }
+        }
+        const sel = selectedName || '';
+        const otherEnabled = includeOther !== false;
+        let html = `<select ${extraAttrs || ''}>`;
+        html += `<option value="" ${!sel ? 'selected' : ''} disabled>-- اختر نوع الوظيفة --</option>`;
+        // #region debug-point getProfessionSelectHtml-forEachCheck
+        console.log('%c🎯 [DEBUG PROFESSIONS] Building <option> nodes now — profs.length to iterate =', 'background:#e2e3e5;color:#383d41;font-weight:bold;', profs.length);
+        // #endregion
+        profs.forEach(p => {
+            try {
+                const nm = (p && p.name) ? String(p.name) : '';
+                if (!nm) return;
+                html += `<option value="${escapeAttr(nm)}" ${sel === nm ? 'selected' : ''}>${escapeHtml(nm)}</option>`;
+                console.log(`  → added option: ${nm}`);
+            } catch(_) {}
+        });
+        if (otherEnabled) {
+            let otherSel = false;
+            try { otherSel = sel && !profs.some(p => p && p.name === sel); } catch(_) { otherSel = !!sel; }
+            html += `<option value="__other__" ${otherSel ? 'selected' : ''}>أخرى (اكتب يدوي)</option>`;
+        }
+        html += `</select>`;
+        // #region debug-point getProfessionSelectHtml-final
+        console.group('%c🏁 [DEBUG PROFESSIONS] getProfessionSelectHtml FINAL OUTPUT', 'background:#d4edda;color:#155724;font-weight:bold;');
+        const tempCount = (html.match(/<option/g) || []).length;
+        console.log('Total <option> tags in generated SELECT:', tempCount, '(= 1 placeholder +', (tempCount - 2), 'professions + 1 Other)');
+        console.log('First 500 chars of generated HTML:', html.substring(0, 500));
+        console.groupEnd();
+        // #endregion
+        return html;
+    } catch (bigErr) {
+        // آخر حصار: إذا فشل أي شيء حتى فوق، نرجع input نصي بسيط عشان نضمن عدم فجور المودال
+        console.warn('getProfessionSelectHtml TOTAL FALLBACK, error:', bigErr && bigErr.message);
+        return `<input type="text" ${extraAttrs || ''} value="${escapeAttr(selectedName || '')}" placeholder="اكتب نوع الوظيفة (مثل: نجار / كهربائي)">`;
+    }
+}
+
+function getCraftsmanProfessionFromRow(rowEl, typeClass, otherClass) {
+    if (!rowEl) return '';
+    const sel = rowEl.querySelector('.' + (typeClass || 'modal-nested-craftsman-type'));
+    if (!sel) return '';
+    if (sel.tagName === 'SELECT') {
+        const v = sel.value || '';
+        if (v !== '__other__') return v.trim();
+        const other = rowEl.querySelector('.' + (otherClass || 'modal-nested-craftsman-type-other'));
+        return other ? (other.value || '').trim() : '';
+    }
+    return (sel.value || '').trim();
+}
+
+function attachCraftsmanProfessionToggle(rowEl, typeClass, otherClass) {
+    if (!rowEl) return;
+    const sel = rowEl.querySelector('.' + (typeClass || 'modal-nested-craftsman-type'));
+    const other = rowEl.querySelector('.' + (otherClass || 'modal-nested-craftsman-type-other'));
+    if (!sel || !other || sel.tagName !== 'SELECT') return;
+    const apply = () => {
+        other.style.display = sel.value === '__other__' ? '' : 'none';
+        if (sel.value !== '__other__') { other.value = ''; }
+    };
+    apply();
+    sel.addEventListener('change', apply);
+    other.addEventListener('input', () => {
+        if (other.value.trim()) sel.value = '__other__';
+    });
+}
+
+// ============================================
 // Router (Hash-based)
 // ============================================
 
@@ -1091,6 +1511,14 @@ function renderCurrentRoute() {
                 app.innerHTML = renderWorkersDashboard();
                 attachWorkersDashboardEvents();
                 break;
+            case 'professions':
+                if (!isAdminLoggedIn()) {
+                    navigate('admin');
+                    return;
+                }
+                app.innerHTML = renderProfessionsDashboard();
+                attachProfessionsDashboardEvents();
+                break;
             case 'admin':
                 app.innerHTML = renderAdminPage();
                 if (isAdminLoggedIn()) {
@@ -1101,6 +1529,11 @@ function renderCurrentRoute() {
                 break;
             case 'invoice':
                 app.innerHTML = renderInvoiceView(params.invoiceId);
+                setTimeout(() => {
+                    document.querySelectorAll('tr[data-nested-craftsman]').forEach(tr => {
+                        try { attachCraftsmanProfessionToggle(tr, 'nested-craftsman-type', 'nested-craftsman-type-other'); } catch (_) {}
+                    });
+                }, 60);
                 break;
             case 'worker':
                 if (!isAdminLoggedIn()) {
@@ -1188,42 +1621,39 @@ function renderHomePage() {
             <div class="works-carousel-wrap" id="worksCarouselWrap">
                 <div class="works-carousel" id="worksCarousel">
 
-                    <!-- Layer 1: Slides (images fade in/out) — AI guaranteed CDN URLs, no works/ folder needed, NO TITLES, images only -->
+                    <!-- Layer 1: Slides (images fade in/out) — 8 صور حقيقية من أعمالنا بمجلد works/ -->
+                    <!-- ⚠️ slide[0] يبدأ بـ is-active مباشرة ليظهر فوراً — لا انتظار لـ JS -->
                     <div class="works-c-slides" id="worksSlides">
-                        <div class="works-c-slide" data-project="0">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxury%20modern%20villa%20exterior%20with%20warm%20evening%20lighting%20in%20Iraq%20stone%20architecture%20photorealistic%204k&image_size=landscape_4_3" alt="">
+                        <div class="works-c-slide is-active" data-project="0">
+                            <img src="works/0bf6e5ee-c51f-4aa1-b9ec-1567141bf451.jpg" alt="مشروع 1" loading="eager" fetchpriority="high">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="1">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxurious%20commercial%20shopping%20mall%20exterior%20modern%20glass%20facade%20gold%20accents%20Syria%20middle%20east%20architecture&image_size=landscape_4_3" alt="">
+                            <img src="works/1f83e2b1-504d-4cfa-878e-7d641ad09c65.jpg" alt="مشروع 2" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="2">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=elegant%20luxury%20hotel%20suite%20bedroom%20pearl%20white%20and%20gold%20interior%20design%20king%20bed%20chandelier%20photorealistic&image_size=landscape_4_3" alt="">
+                            <img src="works/38f946fa-13eb-4e91-8383-877c668c10a6.jpg" alt="مشروع 3" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="3">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=modern%20creative%20architecture%20design%20studio%20office%20interior%20architect%20desk%20with%20blueprints%20warm%20lighting&image_size=landscape_4_3" alt="">
+                            <img src="works/65df641e-5ce2-4bc3-8c72-500a3d71f9eb.jpg" alt="مشروع 4" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="4">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxurious%20wedding%20event%20palace%20ballroom%20hall%20grand%20chandeliers%20marble%20gold%20arabesque%20design&image_size=landscape_4_3" alt="">
+                            <img src="works/689278f9-1e70-4ca7-9975-2b4fea607df4.jpg" alt="مشروع 5" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="5">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=luxury%20executive%20ceo%20office%20wood%20desk%20leather%20chair%20gold%20and%20dark%20blue%20modern%20interior%20photorealistic&image_size=landscape_4_3" alt="">
+                            <img src="works/70a6bab2-9f7a-4a75-b57c-976fd174905a.jpg" alt="مشروع 6" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="6">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=upscale%20fine%20dining%20restaurant%20interior%20sham%20levantine%20cuisine%20warm%20ambient%20lighting%20arabic%20tiles%20wooden%20tables&image_size=landscape_4_3" alt="">
+                            <img src="works/80997e48-7490-4e96-be58-56fd7dbd1c69.jpg" alt="مشروع 7" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="7">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=modern%20video%20production%20studio%20interior%20camera%20equipment%20green%20screen%20led%20lighting%20professional%20dark%20walls&image_size=landscape_4_3" alt="">
-                            <div class="works-c-vignette"></div>
-                        </div>
-                        <div class="works-c-slide" data-project="8">
-                            <img src="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=contemporary%20neighborhood%20family%20villa%20residential%20house%20exterior%20white%20stone%20green%20garden%20sunny%20day&image_size=landscape_4_3" alt="">
+                            <img src="works/9d52e986-c4cd-4c50-9625-59f6b7734552.jpg" alt="مشروع 8" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                     </div>
@@ -1375,12 +1805,12 @@ function attachHomeEvents() {
     const worksDotsWrap = document.getElementById('worksDots');
 
     if (worksCarouselWrap && worksSlides) {
-        const SLIDE_COUNT = 9;
+        const SLIDE_COUNT = 8;
         const AUTO_INTERVAL_MS = 7000; // 7 seconds per slide — luxury calm pace
         let activeIndex = 0;
         let autoTimer = null;
 
-        // Build dots (9 dots, bottom center) — NO LABELS, images-only design
+        // Build dots (8 dots, bottom center) — NO LABELS, images-only design
         if (worksDotsWrap) {
             worksDotsWrap.innerHTML = '';
             for (let i = 0; i < SLIDE_COUNT; i++) {
@@ -1454,11 +1884,10 @@ function attachHomeEvents() {
         });
 
         // Init + start auto rotation
-        // Small delay to trigger Ken Burns transition on the very first slide (it was missing because .is-active was static in HTML)
-        setTimeout(() => {
-            setActive(0);
-            startAutoTimer();
-        }, 260);
+        // (slide[0] يبدأ بـ is-active من HTML مباشرة، فلا حاجة لـ setTimeout)
+        // نبدأ الـ auto timer فوراً، وتأثير Ken Burns يبدأ طبيعياً من transition الـ CSS
+        setActive(0);
+        startAutoTimer();
     }
 }
 
@@ -1616,6 +2045,33 @@ function renderAdminDashboardHome() {
                             <div class="stat-card stat-total" style="padding:0.85rem 1rem;">
                                 <div class="stat-label" style="font-size:0.75rem;">إجمالي الأجور</div>
                                 <div class="stat-value currency" style="font-size:0.8rem;">${formatCurrencySYP(wrkStats.totalSYP)}<br>${formatCurrencyUSD(wrkStats.totalUSD)}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-section" onclick="navigate('professions')" style="cursor:pointer; transition:transform 0.25s ease, box-shadow 0.25s ease;" onmouseover="this.style.transform='translateY(-4px)'; this.style.boxShadow='0 12px 32px rgba(0,0,0,0.08)';" onmouseout="this.style.transform=''; this.style.boxShadow='';">
+                    <div class="dashboard-section-header" style="border-bottom:none; padding-bottom:0.75rem;">
+                        <h2 style="display:flex; align-items:center; gap:0.75rem;">
+                            <span style="width:44px; height:44px; border-radius:50%; background:linear-gradient(135deg, rgba(212,169,66,0.22) 0%, rgba(212,169,66,0.07) 100%); color:#946812; display:inline-flex; align-items:center; justify-content:center; font-size:1.1rem;">
+                                <i class="fas fa-list-check"></i>
+                            </span>
+                            إدارة الوظائف والمهن
+                        </h2>
+                        <div class="link-back" style="opacity:0.9;">
+                            فتح القسم <i class="fas fa-chevron-left" style="margin-right:0.4rem;"></i>
+                        </div>
+                    </div>
+                    <div style="padding:0 1.5rem 1.5rem 1.5rem;">
+                        <p style="color:var(--color-gray); margin-bottom:1.25rem; line-height:1.8;">ترتيب وإضافة وحذف قائمة المهن (النجار / الحداد / الكهربائي... إلخ). هذه القائمة تظهر تلقائياً كقائمة منسدلة عند إنشاء فاتورة جديدة أو إضافة عامل جديد.</p>
+                        <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr); gap:0.75rem;">
+                            <div class="stat-card stat-count" style="padding:0.85rem 1rem;">
+                                <div class="stat-label" style="font-size:0.75rem;">عدد المهن الحالي</div>
+                                <div class="stat-value">${getAllProfessions().length}</div>
+                            </div>
+                            <div class="stat-card stat-total" style="padding:0.85rem 1rem;">
+                                <div class="stat-label" style="font-size:0.75rem;">آخر مهنة مضافة</div>
+                                <div class="stat-value" style="font-size:0.9rem;">${getAllProfessions().length > 0 ? escapeHtml(getAllProfessions().reduce((a, b) => new Date(a.createdAt) > new Date(b.createdAt) ? a : b).name.slice(0, 10)) : 'لا يوجد'}</div>
                             </div>
                         </div>
                     </div>
@@ -1920,94 +2376,154 @@ function attachWorkersDashboardEvents() {
 }
 
 function openWorkerCreate() {
-    const html = `
-        <div class="modal-content" style="max-width:460px;">
-            <div class="modal-header">
-                <h3>إضافة عامل جديد</h3>
-                <button class="btn-icon" onclick="closeWorkerModal()"><i class="fas fa-times"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label class="form-label">اسم العامل *</label>
-                    <input id="wname" type="text" class="form-input" placeholder="مثال: أحمد محمد" required>
+    try {
+        let profSelectHtml;
+        try {
+            profSelectHtml = getProfessionSelectHtml('', `id="wprof" class="form-input" style="font-size:1rem; padding:0.65rem 0.9rem; min-height:42px;"`, true);
+        } catch (e) {
+            profSelectHtml = `<input id="wprof" type="text" class="form-input" placeholder="اكتب اسم المهنة: مثلاً نجار / كهربائي" style="font-size:1rem; padding:0.65rem 0.9rem; min-height:42px;">`;
+        }
+        const html = `
+            <div class="modal-content" style="max-width:460px;">
+                <div class="modal-header">
+                    <h3>إضافة عامل جديد</h3>
+                    <button class="btn-icon" onclick="closeWorkerModal()"><i class="fas fa-times"></i></button>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">المهنة</label>
-                    <input id="wprof" type="text" class="form-input" placeholder="مثال: نجار، حداد، دهان، ...">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">اسم العامل *</label>
+                        <input id="wname" type="text" class="form-input" placeholder="مثال: أحمد محمد" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">المهنة</label>
+                        ${profSelectHtml}
+                        <input id="wprof_other" type="text" class="form-input" placeholder="اكتب اسم الوظيفة هنا..." style="display:none; margin-top:0.5rem; font-size:0.95rem;" oninput="if(this.value.trim()){try{document.getElementById('wprof').value='__other__';}catch(e){}}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">رقم الهاتف</label>
+                        <input id="wphone" type="tel" class="form-input" placeholder="مثال: 00963 9xx xxx xxx">
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">رقم الهاتف</label>
-                    <input id="wphone" type="tel" class="form-input" placeholder="مثال: 00963 9xx xxx xxx">
+                <div class="modal-footer">
+                    <button class="btn btn-outline" onclick="closeWorkerModal()">إلغاء</button>
+                    <button class="btn btn-gold" onclick="submitWorkerCreate()"><i class="fas fa-check"></i> إضافة العامل</button>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeWorkerModal()">إلغاء</button>
-                <button class="btn btn-gold" onclick="submitWorkerCreate()"><i class="fas fa-check"></i> إضافة العامل</button>
-            </div>
-        </div>
-    `;
-    openModalBase(html);
+        `;
+        openModalBase(html);
+        setTimeout(() => {
+            const sel = document.getElementById('wprof');
+            const other = document.getElementById('wprof_other');
+            if (sel && other && sel.tagName === 'SELECT') {
+                sel.addEventListener('change', () => {
+                    other.style.display = sel.value === '__other__' ? '' : 'none';
+                    if (sel.value !== '__other__') other.value = '';
+                });
+            }
+        }, 50);
+    } catch (err) {
+        console.error('openWorkerCreate CRASH:', err);
+        toast('خطأ جسيم', 'تعذر فتح إضافة عامل: ' + (err.message || err), 'error');
+    }
 }
 
 function openWorkerEdit(workerId) {
-    const w = getWorkerById(workerId);
-    if (!w) return;
-    const html = `
-        <div class="modal-content" style="max-width:460px;">
-            <div class="modal-header">
-                <h3>تعديل بيانات العامل</h3>
-                <button class="btn-icon" onclick="closeWorkerModal()"><i class="fas fa-times"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label class="form-label">اسم العامل *</label>
-                    <input id="wname" type="text" class="form-input" value="${escapeHtml(w.name || '')}" required>
+    try {
+        const w = getWorkerById(workerId);
+        if (!w) return;
+        let profSelectHtml;
+        try {
+            profSelectHtml = getProfessionSelectHtml(w.profession || '', `id="wprof" class="form-input" style="font-size:1rem; padding:0.65rem 0.9rem; min-height:42px;"`, true);
+        } catch (e) {
+            profSelectHtml = `<input id="wprof" type="text" class="form-input" value="${escapeHtml(w.profession || '')}" placeholder="اكتب اسم المهنة" style="font-size:1rem; padding:0.65rem 0.9rem; min-height:42px;">`;
+        }
+        let profs;
+        try { profs = getAllProfessions(); } catch(e) { profs = []; }
+        const isCustom = w.profession && profs.length && !profs.some(p => p.name === w.profession);
+        const otherValue = isCustom ? escapeHtml(w.profession) : '';
+        const otherDisplay = isCustom ? '' : 'display:none;';
+        const html = `
+            <div class="modal-content" style="max-width:460px;">
+                <div class="modal-header">
+                    <h3>تعديل بيانات العامل</h3>
+                    <button class="btn-icon" onclick="closeWorkerModal()"><i class="fas fa-times"></i></button>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">المهنة</label>
-                    <input id="wprof" type="text" class="form-input" value="${escapeHtml(w.profession || '')}">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">اسم العامل *</label>
+                        <input id="wname" type="text" class="form-input" value="${escapeHtml(w.name || '')}" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">المهنة</label>
+                        ${profSelectHtml}
+                        <input id="wprof_other" type="text" class="form-input" value="${otherValue}" placeholder="اكتب اسم الوظيفة هنا..." style="${otherDisplay} margin-top:0.5rem; font-size:0.95rem;" oninput="if(this.value.trim()){try{document.getElementById('wprof').value='__other__';}catch(e){}}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">رقم الهاتف</label>
+                        <input id="wphone" type="tel" class="form-input" value="${escapeHtml(w.phone || '')}">
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">رقم الهاتف</label>
-                    <input id="wphone" type="tel" class="form-input" value="${escapeHtml(w.phone || '')}">
+                <div class="modal-footer">
+                    <button class="btn btn-outline" onclick="closeWorkerModal()">إلغاء</button>
+                    <button class="btn btn-gold" onclick="submitWorkerEdit('${workerId}')"><i class="fas fa-save"></i> حفظ التغييرات</button>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeWorkerModal()">إلغاء</button>
-                <button class="btn btn-gold" onclick="submitWorkerEdit('${workerId}')"><i class="fas fa-save"></i> حفظ التغييرات</button>
-            </div>
-        </div>
-    `;
-    openModalBase(html);
+        `;
+        openModalBase(html);
+        setTimeout(() => {
+            const sel = document.getElementById('wprof');
+            const other = document.getElementById('wprof_other');
+            if (sel && other && sel.tagName === 'SELECT') {
+                sel.addEventListener('change', () => {
+                    other.style.display = sel.value === '__other__' ? '' : 'none';
+                    if (sel.value !== '__other__') other.value = '';
+                });
+            }
+        }, 50);
+    } catch (err) {
+        console.error('openWorkerEdit CRASH:', err);
+        toast('خطأ جسيم', 'تعذر فتح تعديل العامل: ' + (err.message || err), 'error');
+    }
 }
 
 function closeWorkerModal() {
     closeModalBase();
 }
 
+function getWorkerProfessionFromForm() {
+    const sel = document.getElementById('wprof');
+    if (!sel) return '';
+    const v = sel.value || '';
+    if (v !== '__other__') return v.trim();
+    const otherInput = document.getElementById('wprof_other');
+    return otherInput ? (otherInput.value || '').trim() : '';
+}
+
 function submitWorkerCreate() {
     const name = (document.getElementById('wname').value || '').trim();
     if (!name) { toast('مطلوب', 'يرجى إدخال اسم العامل', 'warning'); return; }
+    const prof = getWorkerProfessionFromForm();
     createWorker({
         name,
-        profession: (document.getElementById('wprof').value || '').trim(),
+        profession: prof,
         phone: (document.getElementById('wphone').value || '').trim()
     });
     closeWorkerModal();
-    toast('تم الإضافة', 'تمت إضافة العامل بنجاح', 'success');
+    toast('تم الإضافة', 'تمت إضافة العامل بنجاح' + (prof ? ` (${prof})` : ''), 'success');
     renderCurrentRoute();
 }
 
 function submitWorkerEdit(workerId) {
     const name = (document.getElementById('wname').value || '').trim();
     if (!name) { toast('مطلوب', 'يرجى إدخال اسم العامل', 'warning'); return; }
+    const prof = getWorkerProfessionFromForm();
     updateWorker(workerId, {
         name,
-        profession: (document.getElementById('wprof').value || '').trim(),
+        profession: prof,
         phone: (document.getElementById('wphone').value || '').trim()
     });
     closeWorkerModal();
-    toast('تم الحفظ', 'تم تحديث بيانات العامل بنجاح', 'success');
+    toast('تم الحفظ', 'تم تحديث بيانات العامل بنجاح' + (prof ? ` (${prof})` : ''), 'success');
     renderCurrentRoute();
 }
 
@@ -2305,6 +2821,469 @@ function confirmRemovePayment(workerId, paymentId) {
     removeWorkerPayment(workerId, paymentId);
     toast('تم الحذف', 'تم حذف الدفعة', 'info');
     renderCurrentRoute();
+}
+
+// ============================================
+// PROFESSIONS (الوظائف) DASHBOARD + Events
+// ============================================
+
+function renderProfessionsDashboard() {
+    const profs = getAllProfessions();
+    const invCount = getAllInvoices().length;
+    const wrkCount = getAllWorkers().length;
+    const workerProfsDist = {};
+    getAllWorkers().forEach(w => { if (w.profession) workerProfsDist[w.profession] = (workerProfsDist[w.profession] || 0) + 1; });
+
+    return `
+    <div class="dashboard">
+        <div class="dashboard-header">
+            <div class="dashboard-header-inner">
+                <div style="display:flex; align-items:center; gap:1rem;">
+                    <button class="icon-btn icon-btn-back" onclick="navigate('admin')" aria-label="رجوع للوحة التحكم">
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                    <div>
+                        <h1 style="margin:0; font-family:'Cairo',sans-serif;">إدارة الوظائف والمهن</h1>
+                        <p style="margin:0.25rem 0 0; color:var(--color-gray); font-size:0.9rem;">
+                            ترتيب وإضافة وحذف المهن — تظهر تلقائياً كقائمة منسدلة في الفواتير وفي إضافة عامل جديد.
+                        </p>
+                    </div>
+                </div>
+                <button class="btn btn-gold" onclick="openProfessionCreate()">
+                    <i class="fas fa-plus"></i>
+                    إضافة وظيفة جديدة
+                </button>
+            </div>
+        </div>
+
+        <div class="dashboard-stats" style="grid-template-columns: repeat(3,1fr); margin-bottom:1.5rem;">
+            <div class="stat-card stat-count">
+                <div class="stat-icon"><i class="fas fa-list-ol"></i></div>
+                <div class="stat-value">${profs.length}</div>
+                <div class="stat-label">عدد الوظائف الموجودة</div>
+            </div>
+            <div class="stat-card stat-paid">
+                <div class="stat-icon"><i class="fas fa-user-tie"></i></div>
+                <div class="stat-value">${wrkCount}</div>
+                <div class="stat-label">عدد العمال الكلي</div>
+            </div>
+            <div class="stat-card stat-total">
+                <div class="stat-icon"><i class="fas fa-file-invoice-dollar"></i></div>
+                <div class="stat-value">${invCount}</div>
+                <div class="stat-label">عدد الفواتير</div>
+            </div>
+        </div>
+
+        <div style="background:#fff9e8; border:1.5px solid #f0d98a; border-radius:10px; padding:0.9rem 1.1rem; margin-bottom:1.25rem; line-height:1.9; font-size:0.92rem; color:#6a4d0c;">
+            <strong><i class="fas fa-info-circle" style="margin-left:0.3rem;"></i> كيف الشغل هون؟</strong>
+            <br>
+            1. استخدم الأسهم <span style="padding:0.1rem 0.5rem; background:#fff; border:1px solid #e8d18a; border-radius:6px; font-weight:700;">↑</span> و <span style="padding:0.1rem 0.5rem; background:#fff; border:1px solid #e8d18a; border-radius:6px; font-weight:700;">↓</span> عشان ترتب المهن بنفس الترتيب اللي بدك ياه يبان بالفواتير.
+            <br>
+            2. لو أضفت وظيفة جديدة هون → رح تظهر تلقائياً في قائمة "نوع الوظيفة" داخل كل فاتورة وفي صفحة إدارة العمال.
+            <br>
+            3. لو ما كنت عارف اسم الوظيفة → بالفواتير بكون في خيار "أخرى (اكتب يدوي)" يعطيك مربع تكتب فيه الاسم اللي بدك.
+        </div>
+
+        <div class="craftsmen-table-wrapper">
+            <table class="craftsmen-table" id="professionsTable">
+                <thead>
+                    <tr>
+                        <th style="width:8%;">الترتيب</th>
+                        <th>اسم الوظيفة</th>
+                        <th style="width:14%;">عدد العمال</th>
+                        <th style="width:22%;">التحكم</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${profs.length === 0 ? `
+                        <tr>
+                            <td colspan="4" style="text-align:center; padding:2rem 1rem; color:var(--color-gray);">
+                                لا توجد وظائف. اضغط "إضافة وظيفة جديدة".
+                            </td>
+                        </tr>
+                    ` : profs.map((p, idx) => {
+                        const cnt = workerProfsDist[p.name] || 0;
+                        return `
+                        <tr data-prof-id="${p.id}">
+                            <td style="text-align:center; font-weight:700; font-size:1.05rem;">
+                                <span style="display:inline-block; min-width:36px; padding:0.3rem 0.5rem; background:#fdf3d6; border-radius:8px; color:#8a6613;">
+                                    ${Number(p.order) || (idx + 1)}
+                                </span>
+                            </td>
+                            <td style="font-weight:700; font-size:1.05rem; padding:0.7rem 1rem;">
+                                <i class="fas fa-briefcase" style="color:var(--color-gold-dark); margin-left:0.4rem;"></i>
+                                ${escapeHtml(p.name)}
+                            </td>
+                            <td style="text-align:center; font-size:0.95rem;">
+                                ${cnt > 0 ? `
+                                    <button type="button" onclick="openProfessionWorkersModal('${p.id}')" style="all:unset; cursor:pointer; display:inline-block; padding:0.3rem 0.7rem; background:linear-gradient(135deg,rgba(59,130,246,0.18) 0%,rgba(59,130,246,0.06) 100%); color:#1d4ed8; border-radius:20px; font-weight:700; transition:transform 0.15s ease, box-shadow 0.15s ease;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(29,78,216,0.25)';" onmouseout="this.style.transform=''; this.style.boxShadow='';" title="اضغط لعرض العمال المسجلين في هذه الوظيفة">
+                                        <i class="fas fa-users" style="margin-left:0.3rem;"></i>
+                                        ${cnt} عامل
+                                    </button>
+                                ` : `
+                                    <span style="color:var(--color-gray); font-size:0.85rem;">بدون عمال بعد</span>
+                                `}
+                            </td>
+                            <td>
+                                <div style="display:flex; align-items:center; justify-content:center; gap:0.35rem;">
+                                    <button class="icon-btn icon-btn-save" title="نقل للأعلى" onclick="handleReorderProfession('${p.id}','up')" ${idx === 0 ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''}>
+                                        <i class="fas fa-arrow-up"></i>
+                                    </button>
+                                    <button class="icon-btn icon-btn-save" title="نقل للأسفل" onclick="handleReorderProfession('${p.id}','down')" ${idx === profs.length - 1 ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''}>
+                                        <i class="fas fa-arrow-down"></i>
+                                    </button>
+                                    <button class="icon-btn icon-btn-edit" title="تعديل الاسم" onclick="openProfessionEdit('${p.id}')">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="icon-btn icon-btn-delete" title="حذف الوظيفة" onclick="confirmDeleteProfession('${p.id}')">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="dashboard-footer-actions" style="margin-top:1.5rem; display:flex; gap:0.75rem; flex-wrap:wrap;">
+            <button class="btn btn-outline" onclick="navigate('admin')">
+                <i class="fas fa-chevron-right"></i> رجوع للوحة التحكم
+            </button>
+            <button class="btn btn-outline" onclick="navigate('workers')">
+                <i class="fas fa-user-tie"></i> فتح إدارة أجور العمال
+            </button>
+            <button class="btn btn-outline-gold" onclick="navigate('invoices')">
+                <i class="fas fa-file-invoice-dollar"></i> فتح قائمة الفواتير
+            </button>
+        </div>
+    </div>
+    `;
+}
+
+function openProfessionWorkersModal(professionId) {
+    try {
+        const prof = getProfessionById(professionId);
+        if (!prof) {
+            toast('خطأ', 'الوظيفة غير موجودة', 'error');
+            return;
+        }
+        const allWorkers = getAllWorkers();
+
+        // 🤖 تطبيع ذكي لمطابقة اسم الوظيفة في كل سجلات العمال
+        // نطبّع بإزالة الفروقات البسيطة: مسافات زائدة، همزات، تشكيل، حالات حروف
+        const normalizeKey = (s) => {
+            return (s || '')
+                .toString()
+                .replace(/[\u064B-\u0652\u0670\u0640]/g, '') // إزالة التشكيل والتطويل
+                .replace(/[إأآا]/g, 'ا')                      // توحيد الألف
+                .replace(/[ىي]/g, 'ي')                        // توحيد الياء
+                .replace(/ة/g, 'ه')                           // توحيد التاء المربوط
+                .replace(/\s+/g, ' ')                          // توحيد المسافات
+                .trim()
+                .toLowerCase();
+        };
+        const profKey = normalizeKey(prof.name);
+
+        // تصفية العمال الذين وظيفتهم تطابق اسم الوظيفة الحالية
+        const workers = allWorkers
+            .filter(w => normalizeKey(w.profession) === profKey)
+            .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
+
+        // إحصائيات سريعة
+        let totalSYP = 0, totalUSD = 0, totalPayments = 0;
+        workers.forEach(w => {
+            const pays = w.payments || [];
+            totalPayments += pays.length;
+            pays.forEach(p => {
+                totalSYP += Number(p.amountSYP) || 0;
+                totalUSD += Number(p.amountUSD) || 0;
+            });
+        });
+
+        // بناء HTML للمودال
+        const html = `
+            <div style="padding:0.25rem 0.25rem 0.5rem;">
+                <!-- رأس المودال: اسم الوظيفة + الإحصائيات -->
+                <div style="background:linear-gradient(135deg, rgba(212,175,55,0.10) 0%, rgba(212,175,55,0.02) 100%);
+                            border:1px solid rgba(212,175,55,0.30); border-radius:12px; padding:1rem 1.25rem;
+                            margin-bottom:1.25rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                    <div style="width:54px; height:54px; border-radius:50%;
+                                background:rgba(212,175,55,0.20); color:var(--color-gold-dark);
+                                display:flex; align-items:center; justify-content:center; font-size:1.5rem; flex-shrink:0;">
+                        <i class="fas fa-briefcase"></i>
+                    </div>
+                    <div style="flex:1; min-width:200px;">
+                        <h2 style="margin:0; font-family:'Cairo',sans-serif; font-size:1.4rem; color:var(--color-black);">
+                            عمال وظيفة: ${escapeHtml(prof.name)}
+                        </h2>
+                        <p style="margin:0.3rem 0 0; color:var(--color-gray); font-size:0.88rem;">
+                            <i class="fas fa-users" style="margin-left:0.3rem;"></i> ${workers.length} عامل مسجّل
+                            &nbsp;•&nbsp;
+                            <i class="fas fa-wallet" style="margin-left:0.3rem;"></i> ${totalPayments} دفعة
+                        </p>
+                    </div>
+                    <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                        <div style="text-align:center; padding:0.55rem 0.85rem; background:#fff;
+                                    border:1px solid rgba(212,175,55,0.35); border-radius:10px;">
+                            <div style="font-size:0.72rem; color:var(--color-gray);">إجمالي الليرة</div>
+                            <div style="font-weight:700; color:var(--color-gold-dark); font-size:0.95rem;">${formatCurrencySYP(totalSYP)}</div>
+                        </div>
+                        <div style="text-align:center; padding:0.55rem 0.85rem; background:#fff;
+                                    border:1px solid rgba(212,175,55,0.35); border-radius:10px;">
+                            <div style="font-size:0.72rem; color:var(--color-gray);">إجمالي الدولار</div>
+                            <div style="font-weight:700; color:var(--color-gold-dark); font-size:0.95rem;">${formatCurrencyUSD(totalUSD)}</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${workers.length === 0 ? `
+                    <!-- لا يوجد عمال بعد -->
+                    <div style="text-align:center; padding:3rem 1rem; color:var(--color-gray);">
+                        <div style="font-size:3rem; margin-bottom:0.75rem; opacity:0.5;">
+                            <i class="fas fa-user-tie"></i>
+                        </div>
+                        <h3 style="margin:0 0 0.4rem; color:var(--color-black); font-family:'Cairo',sans-serif;">
+                            ما في عمال مسجّلين بهالوظيفة لسا
+                        </h3>
+                        <p style="margin:0 0 1rem; font-size:0.9rem;">
+                            لما تحفظ فاتورة فيها اسم عامل واخترت وظيفته "${escapeHtml(prof.name)}"
+                            <br>الاسم بيظهر هنا تلقائياً مع كل دفعاته.
+                        </p>
+                        <button class="btn btn-outline-gold" onclick="closeModal(); navigate('workers');">
+                            <i class="fas fa-plus"></i> إدارة العمال
+                        </button>
+                    </div>
+                ` : `
+                    <!-- قائمة العمال مع دفعاتهم -->
+                    <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                        ${workers.map((w, wIdx) => {
+                            const pays = (w.payments || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+                            const wSYP = pays.reduce((s, p) => s + (Number(p.amountSYP) || 0), 0);
+                            const wUSD = pays.reduce((s, p) => s + (Number(p.amountUSD) || 0), 0);
+                            const wPhone = w.phone ? `<i class="fas fa-phone-alt" style="margin-left:0.3rem; color:var(--color-gold-dark);"></i>${escapeHtml(w.phone)}` : '';
+                            return `
+                            <div style="background:#fff; border:1px solid #ececec; border-radius:12px; overflow:hidden;
+                                        box-shadow:0 2px 6px rgba(0,0,0,0.04);">
+                                <!-- رأس العامل -->
+                                <div style="padding:0.85rem 1rem; background:linear-gradient(135deg, #fafafa 0%, #f5f3ee 100%);
+                                            border-bottom:1px solid #ececec; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                                    <div style="width:42px; height:42px; border-radius:50%;
+                                                background:linear-gradient(135deg, var(--color-gold-dark) 0%, #8a6613 100%);
+                                                color:#fff; display:flex; align-items:center; justify-content:center;
+                                                font-weight:700; font-size:1.05rem; flex-shrink:0;">
+                                        ${escapeHtml((w.name || '?').charAt(0))}
+                                    </div>
+                                    <div style="flex:1; min-width:160px;">
+                                        <div style="font-weight:700; color:var(--color-black); font-size:1.02rem;">
+                                            ${escapeHtml(w.name || '—')}
+                                        </div>
+                                        <div style="font-size:0.78rem; color:var(--color-gray); margin-top:2px;">
+                                            ${wPhone ? wPhone + ' • ' : ''}
+                                            ${pays.length} دفعة • ${formatCurrencySYP(wSYP)} • ${formatCurrencyUSD(wUSD)}
+                                        </div>
+                                    </div>
+                                    <button class="icon-btn icon-btn-edit" title="فتح صفحة العامل الكاملة" onclick="closeModal(); navigate('worker/${w.id}');">
+                                        <i class="fas fa-external-link-alt"></i>
+                                    </button>
+                                </div>
+
+                                ${pays.length === 0 ? `
+                                    <div style="padding:1rem 1.25rem; color:var(--color-gray); font-size:0.88rem; text-align:center;">
+                                        <i class="fas fa-info-circle" style="margin-left:0.3rem;"></i>
+                                        لسا ما استلم ولا دفعة — بس بظهر بالفواتير لما تنحفظ.
+                                    </div>
+                                ` : `
+                                    <div style="max-height:260px; overflow-y:auto;">
+                                        <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+                                            <thead>
+                                                <tr style="background:#fcfbf7;">
+                                                    <th style="padding:0.55rem 0.85rem; text-align:right; color:var(--color-gray); font-weight:600; font-size:0.78rem; border-bottom:1px solid #ececec;">التاريخ</th>
+                                                    <th style="padding:0.55rem 0.85rem; text-align:right; color:var(--color-gray); font-weight:600; font-size:0.78rem; border-bottom:1px solid #ececec;">ل.س</th>
+                                                    <th style="padding:0.55rem 0.85rem; text-align:right; color:var(--color-gray); font-weight:600; font-size:0.78rem; border-bottom:1px solid #ececec;">$</th>
+                                                    <th style="padding:0.55rem 0.85rem; text-align:right; color:var(--color-gray); font-weight:600; font-size:0.78rem; border-bottom:1px solid #ececec;">الملاحظة</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${pays.slice(0, 8).map(p => `
+                                                    <tr>
+                                                        <td style="padding:0.5rem 0.85rem; border-bottom:1px solid #f3f3f3;">${formatDate(p.date)}</td>
+                                                        <td style="padding:0.5rem 0.85rem; border-bottom:1px solid #f3f3f3; font-weight:600; color:var(--color-gold-dark);">${formatCurrencySYP(Number(p.amountSYP) || 0)}</td>
+                                                        <td style="padding:0.5rem 0.85rem; border-bottom:1px solid #f3f3f3; font-weight:600; color:#1d4ed8;">${formatCurrencyUSD(Number(p.amountUSD) || 0)}</td>
+                                                        <td style="padding:0.5rem 0.85rem; border-bottom:1px solid #f3f3f3; color:var(--color-gray); font-size:0.78rem;">${escapeHtml(p.note || '—')}</td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                        ${pays.length > 8 ? `
+                                            <div style="padding:0.5rem 0.85rem; text-align:center; font-size:0.78rem; color:var(--color-gray); background:#fafafa; border-top:1px solid #ececec;">
+                                                + ${pays.length - 8} دفعة إضافية — اضغط أيقونة العرض الكامل فوق
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                `}
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+
+                    <div style="margin-top:1.25rem; padding:0.75rem 1rem; background:#fff9e8; border:1px dashed #e8d18a;
+                                border-radius:10px; color:#6a4d0c; font-size:0.85rem; line-height:1.7;">
+                        <i class="fas fa-lightbulb" style="margin-left:0.3rem;"></i>
+                        <strong>حماية ذكية مفعّلة:</strong>
+                        لو كتبت بنفس الاسم ونفس الوظيفة بفواتير ثانية، الدفعات بتتخزن عند نفس الموظف
+                        (ما بنشئ سجل مكرر جديد).
+                    </div>
+                `}
+            </div>
+        `;
+
+        showModal(html, {
+            title: 'عمال وظيفة ' + prof.name,
+            isLarge: true
+        });
+    } catch (err) {
+        console.error('openProfessionWorkersModal CRASH:', err);
+        toast('خطأ', 'تعذر فتح قائمة العمال: ' + (err.message || err), 'error');
+    }
+}
+
+function attachProfessionsDashboardEvents() {
+    // (لا أحداث إضافية حالياً - كل شيء عبر onclick مباشر)
+}
+
+function handleReorderProfession(id, dir) {
+    if (reorderProfession(id, dir)) {
+        toast('تم الترتيب', dir === 'up' ? 'نقلت الوظيفة للأعلى' : 'نقلت الوظيفة للأسفل', 'success');
+        renderCurrentRoute();
+    }
+}
+
+function openProfessionCreate() {
+    const html = `
+        <div class="modal-content" style="max-width:440px;">
+            <div class="modal-header">
+                <h3>إضافة وظيفة جديدة</h3>
+                <button class="btn-icon" onclick="closeModal()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">اسم الوظيفة *</label>
+                    <input id="pname" type="text" class="form-input" placeholder="مثال: حداد، سباك، عامل صب...">
+                </div>
+                <div style="background:#fff9e8; border:1px dashed #e8d18a; padding:0.7rem 1rem; border-radius:8px; color:#6a4d0c; font-size:0.88rem; line-height:1.7;">
+                    <i class="fas fa-lightbulb" style="margin-left:0.3rem;"></i>
+                    بعد الإضافة رح تظهر الوظيفة تلقائياً في قائمة "نوع الوظيفة" في الفواتير وفي صفحة العمال.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
+                <button class="btn btn-gold" onclick="submitProfessionCreate()">
+                    <i class="fas fa-check"></i>
+                    إضافة الوظيفة
+                </button>
+            </div>
+        </div>
+    `;
+    showModal(html, { title: 'إضافة وظيفة', isLarge: false });
+}
+
+function submitProfessionCreate() {
+    const name = (document.getElementById('pname').value || '').trim();
+    if (!name) { toast('مطلوب', 'يرجى كتابة اسم الوظيفة', 'warning'); return; }
+    const p = createProfession({ name });
+    if (p) {
+        toast('تم الإضافة', `تمت إضافة وظيفة "${p.name}" بنجاح`, 'success');
+        closeModal();
+        renderCurrentRoute();
+    }
+}
+
+function openProfessionEdit(id) {
+    const p = getProfessionById(id);
+    if (!p) return;
+    const html = `
+        <div class="modal-content" style="max-width:440px;">
+            <div class="modal-header">
+                <h3>تعديل اسم الوظيفة</h3>
+                <button class="btn-icon" onclick="closeModal()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">اسم الوظيفة *</label>
+                    <input id="pname" type="text" class="form-input" value="${escapeAttr(p.name)}">
+                </div>
+                <div style="background:#fff4f4; border:1px dashed #f5b3b3; padding:0.7rem 1rem; border-radius:8px; color:#9b1c1c; font-size:0.88rem; line-height:1.7;">
+                    <i class="fas fa-exclamation-triangle" style="margin-left:0.3rem;"></i>
+                    ملاحظة: تغيير الاسم هنا لا يؤثر تلقائياً على أسماء الوظائف في الفواتير أو العمال القديمة.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
+                <button class="btn btn-gold" onclick="submitProfessionEdit('${id}')">
+                    <i class="fas fa-save"></i>
+                    حفظ التعديل
+                </button>
+            </div>
+        </div>
+    `;
+    showModal(html, { title: 'تعديل الوظيفة', isLarge: false });
+}
+
+function submitProfessionEdit(id) {
+    const name = (document.getElementById('pname').value || '').trim();
+    if (!name) { toast('مطلوب', 'يرجى كتابة اسم الوظيفة', 'warning'); return; }
+    const p = updateProfession(id, { name });
+    if (p) {
+        toast('تم الحفظ', `تم تحديث اسم الوظيفة إلى "${p.name}"`, 'success');
+        closeModal();
+        renderCurrentRoute();
+    }
+}
+
+function confirmDeleteProfession(id) {
+    const p = getProfessionById(id);
+    if (!p) return;
+    const workersInProf = getAllWorkers().filter(w => w.profession === p.name).length;
+    const warningBlock = workersInProf > 0 ? `
+        <div style="background:#fff4f4; border:1.5px dashed #ef4444; border-radius:10px; padding:0.7rem 1rem; margin-top:1rem; color:#9b1c1c; line-height:1.8; font-size:0.88rem;">
+            <i class="fas fa-exclamation-circle" style="margin-left:0.3rem;"></i>
+            <strong>تنبيه:</strong> يوجد <strong>${workersInProf}</strong> عامل / عمالة بالوظيفة "${p.name}".
+            <br>
+            حذف الوظيفة هنا من القائمة بس، مو بحذف العمال من صفحة العمال، بس بعد الحذف رح تظهر اسم وظيفتهم كـ "أخرى" في القوائم.
+        </div>
+    ` : '';
+    showModal(`
+        <div style="text-align:center; padding:1rem 0;">
+            <div style="width:70px; height:70px; margin:0 auto 1.5rem; border-radius:50%; background:rgba(239,68,68,0.1); color:#dc2626; display:flex; align-items:center; justify-content:center; font-size:1.8rem;">
+                <i class="fas fa-trash-alt"></i>
+            </div>
+            <h3 style="font-family:'Cairo',sans-serif; font-size:1.3rem; margin-bottom:0.5rem; font-weight:700;">حذف وظيفة: ${escapeHtml(p.name)}</h3>
+            <p style="color:var(--color-gray);">هل أنت متأكد من حذف هالوظيفة من القائمة؟</p>
+            ${warningBlock}
+        </div>
+    `, {
+        title: 'حذف وظيفة',
+        isLarge: false,
+        footer: `
+            <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
+            <button class="btn btn-primary" style="background:#dc2626;" onclick="executeDeleteProfession('${id}')">
+                <i class="fas fa-trash-alt"></i>
+                نعم، احذف الوظيفة
+            </button>
+        `
+    });
+}
+
+function executeDeleteProfession(id) {
+    const p = getProfessionById(id);
+    const name = p ? p.name : '';
+    if (deleteProfession(id)) {
+        toast('تم الحذف', `تم حذف الوظيفة "${name}" من القائمة بنجاح`, 'success');
+        closeModal();
+        renderCurrentRoute();
+    }
 }
 
 // ============================================
@@ -2661,33 +3640,33 @@ function renderInvoiceView(invoiceId) {
                     </div>
 
                     <div class="section-heading" style="margin-top:1.5rem;">
-                        <h3><i class="fas fa-hand-holding-heart"></i>الدفعات المستلمة من العميل</h3>
+                        <h3><i class="fas fa-hand-holding-heart"></i>الدفعات المستلمة من العميل (مدفوعات + مواد ضمن كل دفعة)</h3>
                         ${isAdmin ? `
                             <button class="btn btn-gold btn-sm" onclick="addClientPaymentRow()">
                                 <i class="fas fa-plus"></i>
-                                إضافة دفعة مستلمة
+                                إضافة دفعة مستقلة
                             </button>
                         ` : ''}
                     </div>
 
-                    <div class="craftsmen-table-wrapper">
+                    <div class="craftsmen-table-wrapper" id="clientPaymentsFullWrap">
                         <table class="craftsmen-table" id="clientPaymentsTable">
                             <thead>
                                 <tr>
-                                    <th style="width:18%;">المبلغ (ل.س)</th>
-                                    <th style="width:18%;">المبلغ ($)</th>
-                                    <th>اسم المادة</th>
-                                    <th style="width:20%;">تاريخ الاستلام</th>
+                                    <th style="width:14%;">المبلغ (ل.س)</th>
+                                    <th style="width:14%;">المبلغ ($)</th>
+                                    <th style="width:30%;">اسم / وصف الدفعة</th>
+                                    <th style="width:18%;">تاريخ الاستلام</th>
                                     ${isAdmin ? '<th style="width:6%;"></th>' : ''}
                                 </tr>
                             </thead>
                             <tbody id="clientPaymentsTbody">
                                 ${(invoice.clientPayments && invoice.clientPayments.length > 0)
-                                    ? invoice.clientPayments.map(cp => renderClientPaymentRow(cp, isAdmin)).join('')
+                                    ? invoice.clientPayments.map((cp, idx) => renderClientPaymentRowFull(cp, idx, isAdmin)).join('')
                                     : `
                                         <tr>
                                             <td colspan="${isAdmin ? '5' : '4'}" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
-                                                ${isAdmin ? 'لا توجد دفعات مستلمة بعد. اضغط "إضافة دفعة مستلمة" للبدء.' : 'لا توجد دفعات مستلمة مسجلة حالياً.'}
+                                                ${isAdmin ? 'لا توجد دفعات مستلمة بعد. اضغط "إضافة دفعة مستقلة" للبدء — تحت كل دفعة تستطيع تسجيل مدفوعات الحرفيين وأسعار المواد مباشرة.' : 'لا توجد دفعات مستلمة مسجلة حالياً.'}
                                             </td>
                                         </tr>
                                     `
@@ -2696,103 +3675,9 @@ function renderInvoiceView(invoiceId) {
                             ${(invoice.clientPayments && invoice.clientPayments.length > 0) ? `
                                 <tfoot>
                                     <tr class="table-total-row">
-                                        <td>${formatCurrencySYP((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountSYP)||0), 0))}</td>
-                                        <td>${formatCurrencyUSD((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountUSD)||0), 0))}</td>
-                                        <td colspan="${isAdmin ? '1' : '0'}" style="text-align:left;">إجمالي المستلمة</td>
-                                        ${isAdmin ? '<td></td><td></td>' : '<td></td>'}
-                                    </tr>
-                                </tfoot>
-                            ` : ''}
-                        </table>
-                    </div>
-
-                    <div class="section-heading">
-                        <h3><i class="fas fa-hard-hat"></i>تفاصيل المدفوعات والحرفيين</h3>
-                        ${isAdmin ? `
-                            <button class="btn btn-gold btn-sm" onclick="addPaymentRow()">
-                                <i class="fas fa-plus"></i>
-                                إضافة دفعة / حرفي
-                            </button>
-                        ` : ''}
-                    </div>
-
-                    <div class="craftsmen-table-wrapper">
-                        <table class="craftsmen-table" id="craftsmenTable">
-                            <thead>
-                                <tr>
-                                    <th style="width:12%;">الدفعة (ل.س)</th>
-                                    <th style="width:12%;">الدفعة ($)</th>
-                                    <th style="width:9%;">نوع الحرفي</th>
-                                    <th style="width:15%;">اسم الحرفي</th>
-                                    <th>التفاصيل</th>
-                                    <th style="width:14%;">التاريخ</th>
-                                    ${isAdmin ? '<th style="width:6%;"></th>' : ''}
-                                </tr>
-                            </thead>
-                            <tbody id="craftsmenTbody">
-                                ${(invoice.payments && invoice.payments.length > 0)
-                                    ? invoice.payments.map(p => renderPaymentRow(p, isAdmin)).join('')
-                                    : `
-                                        <tr>
-                                            <td colspan="${isAdmin ? '7' : '6'}" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
-                                                ${isAdmin ? 'لا توجد مدفوعات بعد. اضغط "إضافة دفعة / حرفي" للبدء.' : 'لا توجد مدفوعات مسجلة حالياً.'}
-                                            </td>
-                                        </tr>
-                                    `
-                                }
-                            </tbody>
-                            ${(invoice.payments && invoice.payments.length > 0) ? `
-                                <tfoot>
-                                    <tr class="table-total-row">
-                                        <td>${formatCurrencySYP(totalReceivedSYP)}</td>
-                                        <td>${formatCurrencyUSD(totalReceivedUSD)}</td>
-                                        <td colspan="${isAdmin ? '4' : '3'}" style="text-align:left;"><strong>إجمالي المدفوعات</strong></td>
-                                        ${isAdmin ? '<td></td>' : ''}
-                                    </tr>
-                                </tfoot>
-                            ` : ''}
-                        </table>
-                    </div>
-
-                    <div class="section-heading" style="margin-top:2rem;">
-                        <h3><i class="fas fa-boxes-stacked"></i>أسعار المواد والمستلزمات</h3>
-                        ${isAdmin ? `
-                            <button class="btn btn-gold btn-sm" onclick="addMaterialRow()">
-                                <i class="fas fa-plus"></i>
-                                إضافة مادة
-                            </button>
-                        ` : ''}
-                    </div>
-
-                    <div class="craftsmen-table-wrapper">
-                        <table class="craftsmen-table" id="materialsTable">
-                            <thead>
-                                <tr>
-                                    <th style="width:16%;">السعر (ل.س)</th>
-                                    <th style="width:16%;">السعر ($)</th>
-                                    <th>اسم المادة</th>
-                                    <th style="width:20%;">التاريخ</th>
-                                    ${isAdmin ? '<th style="width:7%;"></th>' : ''}
-                                </tr>
-                            </thead>
-                            <tbody id="materialsTbody">
-                                ${(invoice.materials && invoice.materials.length > 0)
-                                    ? invoice.materials.map(m => renderMaterialRow(m, isAdmin)).join('')
-                                    : `
-                                        <tr>
-                                            <td colspan="${isAdmin ? '5' : '4'}" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
-                                                ${isAdmin ? 'لا توجد مواد مسجلة بعد. اضغط "إضافة مادة" للبدء.' : 'لا توجد مواد مسجلة حالياً.'}
-                                            </td>
-                                        </tr>
-                                    `
-                                }
-                            </tbody>
-                            ${(invoice.materials && invoice.materials.length > 0) ? `
-                                <tfoot>
-                                    <tr class="table-total-row">
-                                        <td>${formatCurrencySYP(totalMaterialsSYP)}</td>
-                                        <td>${formatCurrencyUSD(totalMaterialsUSD)}</td>
-                                        <td colspan="${isAdmin ? '2' : '1'}" style="text-align:left;">إجمالي أسعار المواد</td>
+                                        <td><strong>${formatCurrencySYP((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountSYP)||0), 0))}</strong></td>
+                                        <td><strong>${formatCurrencyUSD((invoice.clientPayments || []).reduce((s,p)=>s+(Number(p.amountUSD)||0), 0))}</strong></td>
+                                        <td colspan="2" style="text-align:left;"><strong>إجمالي المبالغ المستلمة</strong></td>
                                         ${isAdmin ? '<td></td>' : ''}
                                     </tr>
                                 </tfoot>
@@ -2995,11 +3880,32 @@ function removePaymentRow(btn) {
 }
 
 function renderClientPaymentRow(cp, isAdmin) {
+    return renderClientPaymentRowFull(cp, 0, isAdmin, true);
+}
+
+function renderClientPaymentRowFull(cp, idx, isAdmin, standalone = false) {
     const totalSYP = Number(cp.amountSYP) || 0;
     const totalUSD = Number(cp.amountUSD) || 0;
+    const nestedCraftsmen = Array.isArray(cp.craftsmen) ? cp.craftsmen : [];
+    const nestedMaterials = Array.isArray(cp.materials) ? cp.materials : [];
+    const totalCraftSYP = nestedCraftsmen.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0);
+    const totalCraftUSD = nestedCraftsmen.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0);
+    const totalMatSYP = nestedMaterials.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0);
+    const totalMatUSD = nestedMaterials.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0);
+    const cpayBlockId = 'cpay-block-' + (cp.id || ('tmp' + Date.now()));
     if (isAdmin) {
+        const effectiveCraftsmen = nestedCraftsmen.length > 0
+            ? nestedCraftsmen
+            : [{ id: 'nc_starter', amountSYP: 0, amountUSD: 0, craftsmanType: '', craftsmanName: '', date: todayStr() }];
+        const effectiveMaterials = nestedMaterials.length > 0
+            ? nestedMaterials
+            : [{ id: 'nm_starter', amountSYP: 0, amountUSD: 0, materialName: '', date: todayStr() }];
+        const craftsmenRowsHtml = effectiveCraftsmen.map(cr => nestedCraftsmanRowHtml(cr, isAdmin)).join('');
+        const materialsRowsHtml = effectiveMaterials.map(mr => nestedMaterialRowHtml(mr, isAdmin)).join('');
+        const showCraftFooter = nestedCraftsmen.length > 0;
+        const showMatFooter = nestedMaterials.length > 0;
         return `
-            <tr data-cpay-id="${cp.id}">
+            <tr data-cpay-id="${cp.id}" data-cpay-block="${cpayBlockId}">
                 <td>
                     <input type="number" class="cpay-amount-syp big-price" min="0" value="${totalSYP}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
@@ -3007,19 +3913,103 @@ function renderClientPaymentRow(cp, isAdmin) {
                     <input type="number" class="cpay-amount-usd big-price" min="0" value="${totalUSD}" placeholder="0" oninput="updateAmountsLive()">
                 </td>
                 <td>
-                    <input type="text" class="cpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="اسم المادة">
+                    <input type="text" class="cpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="اسم / وصف هذه الدفعة">
                 </td>
                 <td>
                     <input type="date" class="cpay-date" value="${formatDateInput(cp.date)}">
                 </td>
                 <td>
-                    <button class="icon-btn icon-btn-delete" onclick="removeClientPaymentRow(this)" title="حذف">
+                    <button class="icon-btn icon-btn-delete" onclick="removeClientPaymentRow(this)" title="حذف الدفعة بالكامل">
                         <i class="fas fa-times"></i>
                     </button>
                 </td>
             </tr>
+            <tr class="cpay-nested-block" data-cpay-nested="${cpayBlockId}">
+                <td colspan="5" style="padding:1rem 1.2rem 1.6rem; background:#fbf9f4; border-top:1px dashed #e8dfc8;">
+                    <div class="cpay-nested-grid" style="display:flex; flex-direction:column; gap:1.2rem;">
+                        <div class="cpay-nested-section" style="width:100%;">
+                            <div class="cpay-nested-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid #e8dfc8;">
+                                <h4 style="margin:0; font-size:1rem; color:var(--color-black); font-weight:700;">مدفوعات الحرفيين لهذه الدفعة</h4>
+                                <button class="btn btn-outline-gold btn-sm" onclick="addNestedCraftsmanRow('${cpayBlockId}')"><i class="fas fa-plus"></i>إضافة حرفي</button>
+                            </div>
+                            <div class="craftsmen-table-wrapper" style="box-shadow:none; border:1px solid #eadfc4; border-radius:10px; overflow:hidden;">
+                                <table class="craftsmen-table" data-nested-craftsmen-table="${cpayBlockId}">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:16%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">ل.س</th>
+                                            <th style="width:16%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">$</th>
+                                            <th style="padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">نوع الشغل + اسم الحرفي</th>
+                                            <th style="width:17%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">التاريخ</th>
+                                            <th style="width:5%;padding:0.5rem; background:#fdf7e7;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${craftsmenRowsHtml}
+                                    </tbody>
+                                    ${showCraftFooter ? `
+                                        <tfoot>
+                                            <tr style="background:#fff6dc; font-weight:600; font-size:0.85rem;">
+                                                <td>${formatCurrencySYP(totalCraftSYP)}</td>
+                                                <td>${formatCurrencyUSD(totalCraftUSD)}</td>
+                                                <td colspan="2" style="text-align:left;"><strong>إجمالي مدفوعات الحرفيين للدفعة</strong></td>
+                                                <td></td>
+                                            </tr>
+                                        </tfoot>
+                                    ` : ''}
+                                </table>
+                            </div>
+                        </div>
+                        <div class="cpay-nested-section" style="width:100%;">
+                            <div class="cpay-nested-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid #e8dfc8;">
+                                <h4 style="margin:0; font-size:1rem; color:var(--color-black); font-weight:700;">مواد / مستلزمات هذه الدفعة</h4>
+                                <button class="btn btn-outline-gold btn-sm" onclick="addNestedMaterialRow('${cpayBlockId}')"><i class="fas fa-plus"></i>إضافة مادة</button>
+                            </div>
+                            <div class="craftsmen-table-wrapper" style="box-shadow:none; border:1px solid #eadfc4; border-radius:10px; overflow:hidden;">
+                                <table class="craftsmen-table" data-nested-materials-table="${cpayBlockId}">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:16%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">ل.س</th>
+                                            <th style="width:16%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">$</th>
+                                            <th style="padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">اسم المادة</th>
+                                            <th style="width:17%;padding:0.5rem;font-size:0.8rem; background:#fdf7e7;">التاريخ</th>
+                                            <th style="width:5%;padding:0.5rem; background:#fdf7e7;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${materialsRowsHtml}
+                                    </tbody>
+                                    ${showMatFooter ? `
+                                        <tfoot>
+                                            <tr style="background:#fff6dc; font-weight:600; font-size:0.85rem;">
+                                                <td>${formatCurrencySYP(totalMatSYP)}</td>
+                                                <td>${formatCurrencyUSD(totalMatUSD)}</td>
+                                                <td colspan="2" style="text-align:left;"><strong>إجمالي المواد للدفعة</strong></td>
+                                                <td></td>
+                                            </tr>
+                                        </tfoot>
+                                    ` : ''}
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </td>
+            </tr>
         `;
     }
+    const craftsmenViewHtml = (nestedCraftsmen && nestedCraftsmen.length > 0) || (nestedMaterials && nestedMaterials.length > 0)
+        ? `<tr><td colspan="5" style="padding:0.8rem 1rem; background:#fbf9f4; border-top:1px dashed #e8dfc8;">
+            <div style="display:flex; flex-direction:column; gap:1rem;">
+                <div style="width:100%;">
+                    <h4 style="margin:0 0 0.5rem; font-size:0.95rem; font-weight:700;">مدفوعات الحرفيين لهذه الدفعة</h4>
+                    ${(nestedCraftsmen && nestedCraftsmen.length > 0) ? nestedCraftsmen.map(c => `<div style="display:flex; gap:1rem; padding:0.4rem 0; border-bottom:1px solid #f0e6cc; font-size:0.88rem;"><span>${escapeHtml(c.craftsmanType || '')} • ${escapeHtml(c.craftsmanName || c.description || '—')}</span><span style="margin-right:auto; font-weight:600;">${formatCurrencySYP(Number(c.amountSYP)||0)} / ${formatCurrencyUSD(Number(c.amountUSD)||0)}</span><span style="color:var(--color-gray);">${formatDate(c.date)}</span></div>`).join('') : '<div style="color:var(--color-gray); font-size:0.85rem;">لا توجد مدفوعات حرفيين.</div>'}
+                </div>
+                <div style="width:100%;">
+                    <h4 style="margin:0 0 0.5rem; font-size:0.95rem; font-weight:700;">مواد هذه الدفعة</h4>
+                    ${(nestedMaterials && nestedMaterials.length>0) ? nestedMaterials.map(m => `<div style="display:flex; gap:1rem; padding:0.4rem 0; border-bottom:1px solid #f0e6cc; font-size:0.88rem;"><span>${escapeHtml(m.materialName || '—')}</span><span style="margin-right:auto; font-weight:600;">${formatCurrencySYP(Number(m.amountSYP)||0)} / ${formatCurrencyUSD(Number(m.amountUSD)||0)}</span><span style="color:var(--color-gray);">${formatDate(m.date)}</span></div>`).join('') : '<div style="color:var(--color-gray); font-size:0.85rem;">لا توجد مواد.</div>'}
+                </div>
+            </div>
+        </td></tr>`
+        : '';
     return `
         <tr data-cpay-id="${cp.id}">
             <td class="amount-cell amount-paid">${formatCurrencySYP(totalSYP)}</td>
@@ -3027,7 +4017,164 @@ function renderClientPaymentRow(cp, isAdmin) {
             <td>${escapeHtml(cp.materialName || '—')}</td>
             <td>${formatDate(cp.date)}</td>
         </tr>
+        ${craftsmenViewHtml}
     `;
+}
+
+function nestedCraftsmanRowHtml(cr, isAdmin) {
+    if (!isAdmin) return '';
+    const t = cr.craftsmanType || '';
+    const nm = cr.craftsmanName || '';
+    let profs;
+    try { profs = getAllProfessions(); } catch(e) { profs = DEFAULT_PROFESSIONS; }
+    const isCustom = t && profs.length && !profs.some(p => p.name === t);
+    let profSelectHtml;
+    try {
+        profSelectHtml = getProfessionSelectHtml(t, `class="nested-craftsman-type" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;"`, true);
+    } catch (e) {
+        profSelectHtml = `<input type="text" class="nested-craftsman-type" value="${escapeHtml(t)}" placeholder="نوع الوظيفة (مثل: نجار / كهربائي)" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;">`;
+    }
+    return `
+        <tr data-nested-craftsman="${cr.id || ('nc_' + Date.now())}">
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-craftsman-syp" min="0" value="${Number(cr.amountSYP) || 0}" placeholder="مثل 200000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-craftsman-usd" min="0" value="${Number(cr.amountUSD) || 0}" placeholder="مثل 100" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;">
+                <div style="display:flex; flex-direction:column; gap:0.35rem; min-width:0;">
+                    ${profSelectHtml}
+                    <input type="text" class="nested-craftsman-type-other" value="${escapeHtml(isCustom ? t : '')}" placeholder="اكتب نوع الوظيفة هنا..." style="${isCustom ? '' : 'display:none;'} width:100%; padding:0.5rem 0.65rem; font-size:0.9rem; min-height:36px; border:1.5px solid #c9a235; background:#ffffff; color:#000000;">
+                    <input type="text" class="nested-craftsman-name" value="${escapeHtml(nm || '')}" placeholder="اسم الحرفي: مثلاً أبو محمد" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000 !important;">
+                </div>
+            </td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="nested-craftsman-date" value="${formatDateInput(cr.date)}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="removeNestedCraftsman(this)"><i class="fas fa-times"></i></button>
+            </td>
+        </tr>
+    `;
+}
+
+function nestedMaterialRowHtml(mr, isAdmin) {
+    if (!isAdmin) return '';
+    return `
+        <tr data-nested-material="${mr.id || ('nm_' + Date.now())}">
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-material-syp" min="0" value="${Number(mr.amountSYP) || 0}" placeholder="مثل 150000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-material-usd" min="0" value="${Number(mr.amountUSD) || 0}" placeholder="مثل 50" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="text" class="nested-material-name" value="${escapeHtml(mr.materialName || '')}" placeholder="اسم المادة: مثلاً أسمنت / حديد / طوب" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="nested-material-date" value="${formatDateInput(mr.date)}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="removeNestedMaterial(this)"><i class="fas fa-times"></i></button>
+            </td>
+        </tr>
+    `;
+}
+
+function addNestedCraftsmanRow(cpayBlockId) {
+    try {
+        const table = document.querySelector(`table[data-nested-craftsmen-table="${cpayBlockId}"]`);
+        if (!table) { toast('خطأ تقني', 'لم يتم إيجاد جدول الحرفيين — جرب تحديث الصفحة', 'error'); return; }
+        let tbody = table.querySelector('tbody');
+        if (!tbody) { tbody = document.createElement('tbody'); table.appendChild(tbody); }
+        const emptyMsg = tbody.querySelector(`tr[data-empty-nested-craftsmen="${cpayBlockId}"]`);
+        if (emptyMsg) emptyMsg.remove();
+        const tempId = 'new_nc_' + Date.now() + Math.floor(Math.random() * 10000);
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-nested-craftsman', tempId);
+        let profSelectHtml;
+        try {
+            profSelectHtml = getProfessionSelectHtml('', `class="nested-craftsman-type" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;"`, true);
+        } catch (e) {
+            profSelectHtml = `<input type="text" class="nested-craftsman-type" placeholder="نوع الوظيفة (مثل: نجار / كهربائي)" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;">`;
+        }
+        tr.innerHTML = `
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-craftsman-syp" min="0" value="0" placeholder="مثل 200000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-craftsman-usd" min="0" value="0" placeholder="مثل 100" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;">
+                <div style="display:flex; flex-direction:column; gap:0.35rem; min-width:0;">
+                    ${profSelectHtml}
+                    <input type="text" class="nested-craftsman-type-other" placeholder="اكتب نوع الوظيفة هنا..." style="display:none; width:100%; padding:0.5rem 0.65rem; font-size:0.9rem; min-height:36px; border:1.5px solid #c9a235; background:#ffffff; color:#000000;">
+                    <input type="text" class="nested-craftsman-name" placeholder="اسم الحرفي: مثلاً أبو محمد" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000 !important;">
+                </div>
+            </td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="nested-craftsman-date" value="${todayStr()}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="removeNestedCraftsman(this)"><i class="fas fa-times"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+        try { attachCraftsmanProfessionToggle(tr, 'nested-craftsman-type', 'nested-craftsman-type-other'); } catch (_) {}
+    } catch (err) {
+        console.error('addNestedCraftsmanRow error:', err);
+        toast('خطأ', 'تعذر إضافة حرفي جديد: ' + (err.message || 'خطأ غير معروف'), 'error');
+    }
+    updateAmountsLive();
+}
+
+function removeNestedCraftsman(btn) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const tbody = tr.parentElement;
+    const table = tbody?.parentElement;
+    const cpayBlockId = table ? table.getAttribute('data-nested-craftsmen-table') : null;
+    tr.remove();
+    if (cpayBlockId && tbody) {
+        const remaining = tbody.querySelectorAll('tr[data-nested-craftsman]');
+        const tfoot = table ? table.querySelector('tfoot') : null;
+        if (remaining.length === 0) {
+            const oldEmpty = tbody.querySelector(`tr[data-empty-nested-craftsmen="${cpayBlockId}"]`);
+            if (oldEmpty) oldEmpty.remove();
+            if (tfoot) tfoot.remove();
+            setTimeout(() => addNestedCraftsmanRow(cpayBlockId), 0);
+        }
+    }
+    updateAmountsLive();
+}
+
+function addNestedMaterialRow(cpayBlockId) {
+    try {
+        const table = document.querySelector(`table[data-nested-materials-table="${cpayBlockId}"]`);
+        if (!table) { toast('خطأ تقني', 'لم يتم إيجاد جدول المواد — جرب تحديث الصفحة', 'error'); return; }
+        let tbody = table.querySelector('tbody');
+        if (!tbody) { tbody = document.createElement('tbody'); table.appendChild(tbody); }
+        const emptyMsg = tbody.querySelector(`tr[data-empty-nested-materials="${cpayBlockId}"]`);
+        if (emptyMsg) emptyMsg.remove();
+        const tempId = 'new_nm_' + Date.now() + Math.floor(Math.random() * 10000);
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-nested-material', tempId);
+        tr.innerHTML = `
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-material-syp" min="0" value="0" placeholder="مثل 150000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="nested-material-usd" min="0" value="0" placeholder="مثل 50" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="text" class="nested-material-name" placeholder="اسم المادة: مثلاً أسمنت / حديد / طوب" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="nested-material-date" value="${todayStr()}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="removeNestedMaterial(this)"><i class="fas fa-times"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    } catch (err) {
+        console.error('addNestedMaterialRow error:', err);
+        toast('خطأ', 'تعذر إضافة مادة جديدة: ' + (err.message || 'خطأ غير معروف'), 'error');
+    }
+    updateAmountsLive();
+}
+
+function removeNestedMaterial(btn) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const tbody = tr.parentElement;
+    const table = tbody?.parentElement;
+    const cpayBlockId = table ? table.getAttribute('data-nested-materials-table') : null;
+    tr.remove();
+    if (cpayBlockId && tbody) {
+        const remaining = tbody.querySelectorAll('tr[data-nested-material]');
+        const tfoot = table ? table.querySelector('tfoot') : null;
+        if (remaining.length === 0) {
+            const oldEmpty = tbody.querySelector(`tr[data-empty-nested-materials="${cpayBlockId}"]`);
+            if (oldEmpty) oldEmpty.remove();
+            if (tfoot) tfoot.remove();
+            setTimeout(() => addNestedMaterialRow(cpayBlockId), 0);
+        }
+    }
+    updateAmountsLive();
 }
 
 function addClientPaymentRow() {
@@ -3036,28 +4183,28 @@ function addClientPaymentRow() {
     const emptyRow = tbody.querySelector('tr td[colspan]');
     if (emptyRow) tbody.innerHTML = '';
     const tempId = 'new_cpay_' + Date.now();
-    const newRow = document.createElement('tr');
-    newRow.setAttribute('data-cpay-id', tempId);
-    newRow.innerHTML = `
-        <td>
-            <input type="number" class="cpay-amount-syp big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
-        </td>
-        <td>
-            <input type="number" class="cpay-amount-usd big-price" min="0" value="0" placeholder="0" oninput="updateAmountsLive()">
-        </td>
-        <td>
-            <input type="text" class="cpay-material-name" placeholder="اسم المادة">
-        </td>
-        <td>
-            <input type="date" class="cpay-date" value="${todayStr()}">
-        </td>
-        <td>
-            <button class="icon-btn icon-btn-delete" onclick="removeClientPaymentRow(this)" title="حذف">
-                <i class="fas fa-times"></i>
-            </button>
-        </td>
-    `;
-    tbody.appendChild(newRow);
+    const dummyCp = {
+        id: tempId,
+        amountSYP: 0,
+        amountUSD: 0,
+        materialName: '',
+        date: todayStr(),
+        craftsmen: [],
+        materials: []
+    };
+    const wrapHtml = renderClientPaymentRowFull(dummyCp, 0, true);
+    const tempContainer = document.createElement('tbody');
+    tempContainer.innerHTML = wrapHtml;
+    const nodes = Array.from(tempContainer.children);
+    nodes.forEach(n => tbody.appendChild(n));
+    setTimeout(() => {
+        const block = document.querySelector(`tr[data-cpay-nested="cpay-block-${tempId}"]`);
+        if (block) {
+            block.querySelectorAll('tr[data-nested-craftsman]').forEach(r => {
+                try { attachCraftsmanProfessionToggle(r, 'nested-craftsman-type', 'nested-craftsman-type-other'); } catch (_) {}
+            });
+        }
+    }, 20);
     updateAmountsLive();
     updateClientPaymentsFooter();
 }
@@ -3065,6 +4212,9 @@ function addClientPaymentRow() {
 function removeClientPaymentRow(btn) {
     const tr = btn.closest('tr');
     if (!tr) return;
+    const blockId = tr.getAttribute('data-cpay-block');
+    const nested = blockId ? document.querySelector(`tr[data-cpay-nested="${blockId}"]`) : null;
+    if (nested) nested.remove();
     tr.remove();
     updateAmountsLive();
     updateClientPaymentsFooter();
@@ -3077,11 +4227,41 @@ function collectClientPaymentsFromDOM() {
     const cps = [];
     rows.forEach(row => {
         const id = row.getAttribute('data-cpay-id');
+        const blockId = row.getAttribute('data-cpay-block');
         const amountSYP = row.querySelector('.cpay-amount-syp')?.value;
         const amountUSD = row.querySelector('.cpay-amount-usd')?.value;
         const materialName = row.querySelector('.cpay-material-name')?.value;
         const date = row.querySelector('.cpay-date')?.value;
-        cps.push({ id, amountSYP, amountUSD, materialName, date });
+        const craftsmenArr = [];
+        const materialsArr = [];
+        if (blockId) {
+            const craftTable = document.querySelector(`table[data-nested-craftsmen-table="${blockId}"]`);
+            if (craftTable) {
+                craftTable.querySelectorAll('tbody tr[data-nested-craftsman]').forEach(ctr => {
+                    const cid = ctr.getAttribute('data-nested-craftsman') || generateId('ncraft');
+                    const cSYP = Number(ctr.querySelector('.nested-craftsman-syp')?.value) || 0;
+                    const cUSD = Number(ctr.querySelector('.nested-craftsman-usd')?.value) || 0;
+                    const cType = getCraftsmanProfessionFromRow(ctr, 'nested-craftsman-type', 'nested-craftsman-type-other');
+                    const cName = (ctr.querySelector('.nested-craftsman-name')?.value || '').trim();
+                    const cDate = ctr.querySelector('.nested-craftsman-date')?.value;
+                    if (cSYP === 0 && cUSD === 0 && !cType && !cName) return;
+                    craftsmenArr.push({ id: cid, amountSYP: cSYP, amountUSD: cUSD, craftsmanType: cType, craftsmanName: cName, date: cDate, description: (cType || '') + ' ' + (cName || '') });
+                });
+            }
+            const matTable = document.querySelector(`table[data-nested-materials-table="${blockId}"]`);
+            if (matTable) {
+                matTable.querySelectorAll('tbody tr[data-nested-material]').forEach(mtr => {
+                    const mid = mtr.getAttribute('data-nested-material') || generateId('nmat');
+                    const mSYP = Number(mtr.querySelector('.nested-material-syp')?.value) || 0;
+                    const mUSD = Number(mtr.querySelector('.nested-material-usd')?.value) || 0;
+                    const mName = (mtr.querySelector('.nested-material-name')?.value || '').trim();
+                    const mDate = mtr.querySelector('.nested-material-date')?.value;
+                    if (mSYP === 0 && mUSD === 0 && !mName) return;
+                    materialsArr.push({ id: mid, amountSYP: mSYP, amountUSD: mUSD, materialName: mName, date: mDate });
+                });
+            }
+        }
+        cps.push({ id, amountSYP, amountUSD, materialName, date, craftsmen: craftsmenArr, materials: materialsArr });
     });
     return cps;
 }
@@ -3097,7 +4277,7 @@ function updateClientPaymentsFooter() {
             tbody.innerHTML = `
                 <tr>
                     <td colspan="5" style="text-align:center; padding:2.5rem 1rem; color:var(--color-gray);">
-                        لا توجد دفعات مستلمة بعد. اضغط "إضافة دفعة مستلمة" للبدء.
+                        لا توجد دفعات مستلمة بعد. اضغط "إضافة دفعة مستقلة" للبدء — تحت كل دفعة تستطيع تسجيل مدفوعات الحرفيين والمواد مباشرة.
                     </td>
                 </tr>
             `;
@@ -3389,9 +4569,7 @@ function saveInvoiceChanges(invoiceId) {
     const customerName = document.getElementById('editCustomerName')?.value || '';
     const agreedAmountSYP = Number(document.getElementById('editAgreedAmountSYP')?.value || 0);
     const agreedAmountUSD = Number(document.getElementById('editAgreedAmountUSD')?.value || 0);
-    const payments = collectPaymentsFromDOM();
     const clientPayments = collectClientPaymentsFromDOM();
-    const materials = collectMaterialsFromDOM();
     const sitePhotos = currentSitePhotos.length > 0 ? currentSitePhotos : getCurrentInvoicePhotos();
 
     if (!customerName.trim()) {
@@ -3400,19 +4578,153 @@ function saveInvoiceChanges(invoiceId) {
         return;
     }
 
-    updateInvoice(invoiceId, {
+    const finalInvoice = updateInvoice(invoiceId, {
         customerName: customerName.trim(),
         agreedAmountSYP,
         agreedAmountUSD,
-        payments,
         clientPayments,
-        materials,
+        payments: [],
+        materials: [],
         sitePhotos
     });
     currentSitePhotos = [];
 
+    if (finalInvoice) {
+        const syncRes = syncInvoiceCraftsmenToWorkers(finalInvoice.id, customerName.trim(), finalInvoice.clientPayments || []);
+        const totalSync = syncRes.linked + syncRes.updated + syncRes.removed;
+        if (totalSync > 0) {
+            let parts = [];
+            if (syncRes.linked) parts.push(`${syncRes.linked} دفعة جديدة`);
+            if (syncRes.updated) parts.push(`${syncRes.updated} تحديث`);
+            if (syncRes.removed) parts.push(`${syncRes.removed} حذف`);
+            setTimeout(() => toast('🔗 ربط تلقائي بأجور العمال', parts.join('، ') + ' تحت أسماء العمال المطابقة', 'info'), 500);
+        }
+    }
+
     toast('تم الحفظ', 'تم تحديث الفاتورة بنجاح', 'success');
     renderCurrentRoute();
+}
+
+// ============================================
+// ربط تلقائي: حرفيين الفاتورة ↔ أجور العمال
+// ============================================
+function syncInvoiceCraftsmenToWorkers(invoiceId, customerName, clientPayments) {
+    if (!invoiceId || !Array.isArray(clientPayments)) return { linked: 0, updated: 0, removed: 0, skipped: 0 };
+    const workers = getAllWorkers();
+    let dirty = false;
+    let linkedCount = 0;
+    let updatedCount = 0;
+    let removedCount = 0;
+    let skippedCount = 0;
+    const seenSourceIds = new Set();
+
+    // 🤖 تطبيع ذكي + قوي: يوحد الألف/الياء/التاء/الهمزات ويزيل التشكيل والمسافات الزائدة
+    // هذا يضمن "محمد" و "محمّد" و "محم د" يعتبرون نفس الاسم، و"الالمنيوم" و"الألمنيوم" نفس الوظيفة
+    const cNorm = (s) => {
+        return (s == null ? '' : s.toString())
+            .replace(/[\u064B-\u0652\u0670\u0640]/g, '') // إزالة التشكيل + التطويل
+            .replace(/[إأآا]/g, 'ا')                      // توحيد الألف
+            .replace(/[ىي]/g, 'ي')                        // توحيد الياء
+            .replace(/ة/g, 'ه')                           // توحيد التاء المربوطة
+            .replace(/\s+/g, ' ')                          // توحيد المسافات
+            .trim()
+            .toLowerCase();
+    };
+
+    clientPayments.forEach(cp => {
+        const crafts = Array.isArray(cp.craftsmen) ? cp.craftsmen : [];
+        crafts.forEach(c => {
+            const amtSYP = Number(c.amountSYP) || 0;
+            const amtUSD = Number(c.amountUSD) || 0;
+            if (amtSYP <= 0 && amtUSD <= 0) { skippedCount++; return; }
+            const cName = cNorm(c.craftsmanName);
+            const cProf = cNorm(c.craftsmanType);
+            if (!cName) { skippedCount++; return; }
+            const sourceId = String(c.id || '');
+            if (!sourceId) { skippedCount++; return; }
+            seenSourceIds.add(sourceId);
+
+            // 🛡️ مطابقة صارمة بالاسم + الوظيفة (التطبيع الذكي يلتقط الفروقات البسيطة)
+            let wIdx = workers.findIndex(w =>
+                cNorm(w.name) === cName &&
+                cNorm(w.profession) === cProf
+            );
+            // ⛔ ملاحظة: تم حذف بحث "بالاسم فقط" السابق عمداً لمنع دمج دفعات موظف بوظيفة مختلفة
+            // (مثلاً "أحمد الحداد" و "أحمد النجار" صاروا منفصلين بدل دمج دفعاتهم خطأً)
+            if (wIdx === -1) {
+                // حماية ذكية: الموظف مش مسجّل بعد → ما بنشئ سجل مكرر، فقط نتجاهل الدفعة بأمان
+                skippedCount++;
+                return;
+            }
+            const w = workers[wIdx];
+            w.payments = w.payments || [];
+            const payIdx = w.payments.findIndex(p =>
+                p.sourceId === sourceId && p.invoiceId === invoiceId
+            );
+            const noteText = `من فاتورة العميل: ${customerName || '—'}${cp.materialName ? ' • ' + cp.materialName : ''}`;
+            if (payIdx >= 0) {
+                const p = w.payments[payIdx];
+                if ((Number(p.amountSYP) || 0) !== amtSYP ||
+                    (Number(p.amountUSD) || 0) !== amtUSD ||
+                    (p.date || '') !== (c.date || '') ||
+                    (p.note || '') !== noteText) {
+                    w.payments[payIdx] = {
+                        ...p,
+                        amountSYP: amtSYP,
+                        amountUSD: amtUSD,
+                        date: c.date || p.date || todayStr(),
+                        note: noteText,
+                        updatedAt: new Date().toISOString()
+                    };
+                    w.updatedAt = new Date().toISOString();
+                    dirty = true;
+                    updatedCount++;
+                }
+            } else {
+                w.payments.unshift({
+                    id: generateId('wpay'),
+                    sourceId: sourceId,
+                    invoiceId: invoiceId,
+                    amountSYP: amtSYP,
+                    amountUSD: amtUSD,
+                    date: c.date || todayStr(),
+                    note: noteText,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                });
+                w.updatedAt = new Date().toISOString();
+                dirty = true;
+                linkedCount++;
+            }
+        });
+    });
+
+    workers.forEach((w, idx) => {
+        if (!Array.isArray(w.payments) || w.payments.length === 0) return;
+        const before = w.payments.length;
+        w.payments = w.payments.filter(p => {
+            if (p.invoiceId !== invoiceId || !p.sourceId) return true;
+            return seenSourceIds.has(p.sourceId);
+        });
+        if (w.payments.length !== before) {
+            removedCount += (before - w.payments.length);
+            w.updatedAt = new Date().toISOString();
+            dirty = true;
+        }
+    });
+
+    if (dirty) saveAllWorkers(workers);
+
+    // 🪵 تشخيص للتطوير
+    if (linkedCount > 0 || updatedCount > 0 || removedCount > 0 || skippedCount > 0) {
+        console.log(
+            `%c[SyncCrafts→Workers v3.16]%c invoice=${invoiceId} | linked=${linkedCount} updated=${updatedCount} removed=${removedCount} skipped=${skippedCount}`,
+            'background:#1d4ed8;color:#fff;font-weight:bold;padding:2px 6px;border-radius:4px;',
+            'color:#1d4ed8;'
+        );
+    }
+
+    return { linked: linkedCount, updated: updatedCount, removed: removedCount, skipped: skippedCount };
 }
 
 // ============================================
@@ -3420,231 +4732,365 @@ function saveInvoiceChanges(invoiceId) {
 // ============================================
 
 function openCreateInvoiceModal() {
-    currentModalSitePhotos = [];
-    const content = renderInvoiceFormModal(null);
-    showModal(content, { title: 'إنشاء فاتورة جديدة', isLarge: true, footer: `
-        <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
-        <button class="btn btn-gold" onclick="submitInvoiceForm(null)">
-            <i class="fas fa-check"></i>
-            إنشاء الفاتورة
-        </button>
-    `});
+    try {
+        currentModalSitePhotos = [];
+        const content = renderInvoiceFormModal(null);
+        showModal(content, { title: 'إنشاء فاتورة جديدة', isLarge: true, footer: `
+            <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
+            <button class="btn btn-gold" onclick="submitInvoiceForm(null)">
+                <i class="fas fa-check"></i>
+                إنشاء الفاتورة
+            </button>
+        `});
+        setTimeout(() => {
+            document.querySelectorAll('tr[data-modal-nested-craftsman]').forEach(tr => {
+                try { attachCraftsmanProfessionToggle(tr, 'modal-nested-craftsman-type', 'modal-nested-craftsman-type-other'); } catch(_) {}
+            });
+        }, 80);
+    } catch (err) {
+        console.error('openCreateInvoiceModal CRASH:', err);
+        toast('خطأ جسيم', 'تعذر فتح نموذج إنشاء الفاتورة: ' + (err.message || err), 'error');
+    }
 }
 
 function openEditInvoiceModal(invoiceId) {
-    const invoice = getInvoiceById(invoiceId);
-    if (!invoice) {
-        toast('خطأ', 'الفاتورة غير موجودة', 'error');
-        return;
+    try {
+        const invoice = getInvoiceById(invoiceId);
+        if (!invoice) {
+            toast('خطأ', 'الفاتورة غير موجودة', 'error');
+            return;
+        }
+        currentModalSitePhotos = Array.isArray(invoice.sitePhotos) ? [...invoice.sitePhotos] : [];
+        const content = renderInvoiceFormModal(invoice);
+        showModal(content, { title: 'تعديل الفاتورة', isLarge: true, footer: `
+            <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
+            <button class="btn btn-gold" onclick="submitInvoiceForm('${invoiceId}')">
+                <i class="fas fa-save"></i>
+                حفظ التغييرات
+            </button>
+        `});
+        setTimeout(() => {
+            renderModalSitePhotosGrid();
+            document.querySelectorAll('tr[data-modal-nested-craftsman]').forEach(tr => {
+                try { attachCraftsmanProfessionToggle(tr, 'modal-nested-craftsman-type', 'modal-nested-craftsman-type-other'); } catch(_) {}
+            });
+        }, 80);
+    } catch (err) {
+        console.error('openEditInvoiceModal CRASH:', err);
+        toast('خطأ جسيم', 'تعذر فتح نموذج تعديل الفاتورة: ' + (err.message || err), 'error');
     }
-    currentModalSitePhotos = Array.isArray(invoice.sitePhotos) ? [...invoice.sitePhotos] : [];
-    const content = renderInvoiceFormModal(invoice);
-    showModal(content, { title: 'تعديل الفاتورة', isLarge: true, footer: `
-        <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
-        <button class="btn btn-gold" onclick="submitInvoiceForm('${invoiceId}')">
-            <i class="fas fa-save"></i>
-            حفظ التغييرات
-        </button>
-    `});
-    setTimeout(() => renderModalSitePhotosGrid(), 50);
+}
+
+// ===== Renderer خاص بالمودال: nested حرفيين + مواد تحت كل clientPayment =====
+function renderModalClientPaymentRowFull(cp, idx) {
+    const totalSYP = Number(cp.amountSYP) || 0;
+    const totalUSD = Number(cp.amountUSD) || 0;
+    const nestedCraftsmen = Array.isArray(cp.craftsmen) ? cp.craftsmen : [];
+    const nestedMaterials = Array.isArray(cp.materials) ? cp.materials : [];
+    const totalCraftSYP = nestedCraftsmen.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0);
+    const totalCraftUSD = nestedCraftsmen.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0);
+    const totalMatSYP = nestedMaterials.reduce((s, x) => s + (Number(x.amountSYP) || 0), 0);
+    const totalMatUSD = nestedMaterials.reduce((s, x) => s + (Number(x.amountUSD) || 0), 0);
+    const mcpayBlockId = 'mcpay-block-' + (cp.id || ('tmp' + Date.now() + '_' + idx));
+
+    const modalNestedCraftsmanRowHtml = (c) => {
+        const t = c.craftsmanType || '';
+        const nm = c.craftsmanName || '';
+        let profs;
+        try { profs = getAllProfessions(); } catch(e) { try { profs = DEFAULT_PROFESSIONS; } catch(e2) { profs = []; } }
+        const isCustom = t && profs.length && !profs.some(p => p.name === t);
+        let profSelectHtml;
+        try {
+            profSelectHtml = getProfessionSelectHtml(t, `class="modal-nested-craftsman-type" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;"`, true);
+        } catch (e) {
+            profSelectHtml = `<input type="text" class="modal-nested-craftsman-type" value="${escapeHtml(t)}" placeholder="نوع الوظيفة (مثل: نجار / كهربائي)" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;">`;
+        }
+        const cid = c.id || ('mnc_' + Date.now() + Math.random());
+        return `
+        <tr data-modal-nested-craftsman="${cid}">
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-craftsman-syp" min="0" value="${Number(c.amountSYP) || 0}" placeholder="مثل 200000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-craftsman-usd" min="0" value="${Number(c.amountUSD) || 0}" placeholder="مثل 100" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;">
+                <div style="display:flex; flex-direction:column; gap:0.35rem; min-width:0;">
+                    ${profSelectHtml}
+                    <input type="text" class="modal-nested-craftsman-type-other" value="${escapeHtml(isCustom ? t : '')}" placeholder="اكتب نوع الوظيفة هنا..." style="${isCustom ? '' : 'display:none;'} width:100%; padding:0.5rem 0.65rem; font-size:0.9rem; min-height:36px; border:1.5px solid #c9a235; background:#ffffff; color:#000000;">
+                    <input type="text" class="modal-nested-craftsman-name" value="${escapeHtml(nm || '')}" placeholder="اسم الحرفي: مثلاً أبو محمد" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000 !important;">
+                </div>
+            </td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="modal-nested-craftsman-date" value="${formatDateInput(c.date)}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="modalRemoveNestedCraftsman(this)"><i class="fas fa-times"></i></button>
+            </td>
+        </tr>
+    `};
+    const effectiveCraftsmen = nestedCraftsmen.length > 0
+        ? nestedCraftsmen
+        : [{ id: 'mnc_starter', amountSYP: 0, amountUSD: 0, craftsmanType: '', craftsmanName: '', date: todayStr() }];
+    const craftsmenRowsHtml = effectiveCraftsmen.map(cr => modalNestedCraftsmanRowHtml(cr)).join('');
+    const showCraftFooter = nestedCraftsmen.length > 0;
+    const modalNestedMaterialRowHtml = (m) => `
+        <tr data-modal-nested-material="${m.id || ('mnm_' + Date.now() + Math.random())}">
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-material-syp" min="0" value="${Number(m.amountSYP) || 0}" placeholder="مثل 150000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-material-usd" min="0" value="${Number(m.amountUSD) || 0}" placeholder="مثل 50" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="text" class="modal-nested-material-name" value="${escapeHtml(m.materialName || '')}" placeholder="اسم المادة: مثلاً أسمنت / حديد / طوب" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="modal-nested-material-date" value="${formatDateInput(m.date)}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="modalRemoveNestedMaterial(this)"><i class="fas fa-times"></i></button>
+            </td>
+        </tr>
+    `;
+    const effectiveMaterials = nestedMaterials.length > 0
+        ? nestedMaterials
+        : [{ id: 'mnm_starter', amountSYP: 0, amountUSD: 0, materialName: '', date: todayStr() }];
+    const materialsRowsHtml = effectiveMaterials.map(mr => modalNestedMaterialRowHtml(mr)).join('');
+    const showMatFooter = nestedMaterials.length > 0;
+
+    return `
+        <tr data-mcpay-id="${cp.id}" data-mcpay-block="${mcpayBlockId}" style="background:linear-gradient(90deg,#fffdf5 0%,#faf4e2 100%); border-top:2px solid var(--color-gold-dark);">
+            <td style="padding:0.6rem;">
+                <input type="number" min="0" class="mcpay-amount-syp big-price" value="${totalSYP}" placeholder="الدفعة بالليرة" style="font-size:1.1rem; padding:0.7rem 0.85rem; border-color:#c9a235;">
+            </td>
+            <td style="padding:0.6rem;">
+                <input type="number" min="0" class="mcpay-amount-usd big-price" value="${totalUSD}" placeholder="الدفعة بالدولار" style="font-size:1.1rem; padding:0.7rem 0.85rem; border-color:#c9a235;">
+            </td>
+            <td style="padding:0.6rem;">
+                <input type="text" class="mcpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="وصف الدفعة: مثلاً دفعة أولى / دفعة سقف / دفعة نهائية" style="font-size:1rem; padding:0.6rem 0.8rem; min-height:42px; border-color:#e0c57a;">
+            </td>
+            <td style="padding:0.6rem; width:15%;">
+                <input type="date" class="mcpay-date" value="${formatDateInput(cp.date)}" style="font-size:0.85rem; padding:0.45rem 0.55rem; min-height:40px;">
+            </td>
+            <td style="padding:0.6rem;">
+                <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemoveClientPayment(this)" title="حذف هالدفعة بأكملها">
+                    <i class="fas fa-times"></i>
+                </button>
+            </td>
+        </tr>
+        <tr class="cpay-nested-block" data-mcpay-nested="${mcpayBlockId}">
+            <td colspan="5" style="padding:1rem 1.2rem 1.4rem; background:#fefaf0; border-top:2px dashed #d4a942; border-bottom:2px solid #e8dfc8;">
+                <div style="background:#fff; border:1.5px solid #eadfc4; border-radius:12px; padding:1rem 1.1rem; box-shadow:0 2px 6px rgba(180,150,70,0.08);">
+                <div class="cpay-nested-grid" style="display:flex; flex-direction:column; gap:1.2rem;">
+                    <!-- القسم الأول: أجور الحرفيين للدفعة هذه (بعرض كامل فوق) -->
+                    <div class="cpay-nested-section" style="width:100%;">
+                        <div class="cpay-nested-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.7rem; padding-bottom:0.55rem; border-bottom:1.5px solid #e8dfc8;">
+                            <h4 style="margin:0; font-size:1.05rem; color:var(--color-black); font-weight:700;">
+                                أجور الحرفيين (من هالدفعة)
+                            </h4>
+                            <button type="button" class="btn btn-outline-gold btn-sm" style="font-size:0.82rem; padding:0.3rem 0.7rem;" onclick="modalAddNestedCraftsman('${mcpayBlockId}')">
+                                <i class="fas fa-plus"></i>
+                                إضافة حرفي
+                            </button>
+                        </div>
+                        <div class="craftsmen-table-wrapper" style="box-shadow:none; border:1px solid #eadfc4; border-radius:10px; overflow:hidden;">
+                            <table class="craftsmen-table" data-modal-nested-craftsmen-table="${mcpayBlockId}">
+                                <thead>
+                                    <tr>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">ل.س</th>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">$</th>
+                                        <th style="padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">نوع الشغل + اسم الحرفي</th>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">التاريخ</th>
+                                        <th style="width:5%; padding:0.5rem; background:#fdf7e7;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${craftsmenRowsHtml}
+                                </tbody>
+                                ${showCraftFooter ? `
+                                    <tfoot>
+                                        <tr style="background:#fff0c7; font-weight:700; font-size:0.88rem;">
+                                            <td style="padding:0.6rem;">${formatCurrencySYP(totalCraftSYP)}</td>
+                                            <td style="padding:0.6rem;">${formatCurrencyUSD(totalCraftUSD)}</td>
+                                            <td colspan="2" style="text-align:left; padding:0.6rem;">إجمالي أجور الحرفيين من هالدفعة</td>
+                                            <td style="padding:0.6rem;"></td>
+                                        </tr>
+                                    </tfoot>
+                                ` : ''}
+                            </table>
+                        </div>
+                    </div>
+                    <!-- القسم الثاني: مواد / مستلزمات للدفعة هذه (تحت الحرفيين بعرض كامل) -->
+                    <div class="cpay-nested-section" style="width:100%;">
+                        <div class="cpay-nested-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.7rem; padding-bottom:0.55rem; border-bottom:1.5px solid #e8dfc8;">
+                            <h4 style="margin:0; font-size:1.05rem; color:var(--color-black); font-weight:700;">
+                                مواد ومستلزمات (من هالدفعة)
+                            </h4>
+                            <button type="button" class="btn btn-outline-gold btn-sm" style="font-size:0.82rem; padding:0.3rem 0.7rem;" onclick="modalAddNestedMaterial('${mcpayBlockId}')">
+                                <i class="fas fa-plus"></i>
+                                إضافة مادة
+                            </button>
+                        </div>
+                        <div class="craftsmen-table-wrapper" style="box-shadow:none; border:1px solid #eadfc4; border-radius:10px; overflow:hidden;">
+                            <table class="craftsmen-table" data-modal-nested-materials-table="${mcpayBlockId}">
+                                <thead>
+                                    <tr>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">ل.س</th>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">$</th>
+                                        <th style="padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">اسم المادة</th>
+                                        <th style="width:16%; padding:0.5rem; font-size:0.85rem; background:#fdf7e7;">التاريخ</th>
+                                        <th style="width:5%; padding:0.5rem; background:#fdf7e7;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${materialsRowsHtml}
+                                </tbody>
+                                ${showMatFooter ? `
+                                    <tfoot>
+                                        <tr style="background:#fff0c7; font-weight:700; font-size:0.88rem;">
+                                            <td style="padding:0.6rem;">${formatCurrencySYP(totalMatSYP)}</td>
+                                            <td style="padding:0.6rem;">${formatCurrencyUSD(totalMatUSD)}</td>
+                                            <td colspan="2" style="text-align:left; padding:0.6rem;">إجمالي المواد المشتراة من هالدفعة</td>
+                                            <td style="padding:0.6rem;"></td>
+                                        </tr>
+                                    </tfoot>
+                                ` : ''}
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                </div>
+            </td>
+        </tr>
+    `;
 }
 
 function renderInvoiceFormModal(invoice) {
     const isEdit = !!invoice;
-    const data = invoice || {
+    // ===== نقل البيانات القديمة flat إلى nested عند فتح المودال (retrocompat) =====
+    let baseData = invoice ? { ...invoice } : null;
+    if (baseData) {
+        // Retrocompat: إذا وجدنا payments/materials flat و clientPayments nested فيهما فارغين → ندمج
+        const flatPayments = Array.isArray(baseData.payments) ? baseData.payments : [];
+        const flatMaterials = Array.isArray(baseData.materials) ? baseData.materials : [];
+        if ((flatPayments.length > 0 || flatMaterials.length > 0) && Array.isArray(baseData.clientPayments)) {
+            // تجهيز cpays مع nested فارغة إن لزم
+            baseData.clientPayments = baseData.clientPayments.map(cp => ({
+                ...cp,
+                craftsmen: Array.isArray(cp.craftsmen) ? cp.craftsmen : [],
+                materials: Array.isArray(cp.materials) ? cp.materials : []
+            }));
+            if (baseData.clientPayments.length === 0) {
+                baseData.clientPayments.push({
+                    id: generateId('cpay'),
+                    amountSYP: 0,
+                    amountUSD: 0,
+                    materialName: '',
+                    date: todayStr(),
+                    craftsmen: [],
+                    materials: []
+                });
+            }
+            const target = baseData.clientPayments[0];
+            flatPayments.forEach(p => {
+                target.craftsmen.push({
+                    id: p.id || generateId('ncraft'),
+                    amountSYP: Number(p.amountSYP) || 0,
+                    amountUSD: Number(p.amountUSD) || 0,
+                    craftsmanType: p.craftsmanType || '',
+                    craftsmanName: p.craftsmanName || '',
+                    description: p.description || '',
+                    date: p.date || todayStr()
+                });
+            });
+            flatMaterials.forEach(m => {
+                target.materials.push({
+                    id: m.id || generateId('nmat'),
+                    amountSYP: Number(m.amountSYP) || 0,
+                    amountUSD: Number(m.amountUSD) || 0,
+                    materialName: m.materialName || '',
+                    date: m.date || todayStr()
+                });
+            });
+            // بعد الدمج، فارغ المسطحات حتى لا يعيد دمجها createInvoice/updateInvoice
+            baseData.payments = [];
+            baseData.materials = [];
+        }
+        // التأكد من أن كل clientPayment لديه craftsmen + materials كمصفوفات
+        if (Array.isArray(baseData.clientPayments)) {
+            baseData.clientPayments = baseData.clientPayments.map(cp => ({
+                ...cp,
+                craftsmen: Array.isArray(cp.craftsmen) ? cp.craftsmen : [],
+                materials: Array.isArray(cp.materials) ? cp.materials : []
+            }));
+        }
+    }
+    const data = baseData || {
         customerName: '',
         agreedAmountSYP: 0,
         agreedAmountUSD: 0,
-        clientPayments: [{ id: generateId('cpay'), amountSYP: 0, amountUSD: 0, note: '', date: todayStr() }],
-        payments: [{ id: generateId('pay'), amountSYP: 0, amountUSD: 0, craftsmanType: '', craftsmanName: '', date: todayStr() }],
-        materials: [{ id: generateId('mat'), amountSYP: 0, amountUSD: 0, materialName: '', date: todayStr() }]
+        clientPayments: [{ id: generateId('cpay'), amountSYP: 0, amountUSD: 0, materialName: '', note: '', date: todayStr(), craftsmen: [], materials: [] }],
+        payments: [],
+        materials: []
     };
     if (!Array.isArray(data.clientPayments) || data.clientPayments.length === 0) {
-        data.clientPayments = [{ id: generateId('cpay'), amountSYP: 0, amountUSD: 0, note: '', date: todayStr() }];
+        data.clientPayments = [{ id: generateId('cpay'), amountSYP: 0, amountUSD: 0, materialName: '', note: '', date: todayStr(), craftsmen: [], materials: [] }];
     }
+    // التأكد النهائي أن كل cpay لديه nested arrays
+    data.clientPayments = data.clientPayments.map(cp => ({
+        ...cp,
+        craftsmen: Array.isArray(cp.craftsmen) ? cp.craftsmen : [],
+        materials: Array.isArray(cp.materials) ? cp.materials : []
+    }));
 
     return `
         <div class="form-group">
             <label class="form-label"><span class="required">*</span>اسم العميل</label>
-            <input type="text" id="formCustomerName" class="form-input" value="${escapeHtml(data.customerName)}" placeholder="مثال: أحمد محمد">
+            <input type="text" id="formCustomerName" class="form-input" value="${escapeHtml(data.customerName)}" placeholder="مثال: أحمد محمد - صاحب الفيلا" style="font-size:1.05rem; padding:0.75rem 0.95rem;">
         </div>
 
         <div class="form-group">
-            <label class="form-label"><span class="required">*</span>المبلغ المتفق عليه</label>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.8rem;">
+            <label class="form-label" style="font-size:1rem;">
+                <i class="fas fa-handshake" style="color:var(--color-gold-dark); margin-left:0.3rem;"></i>
+                <span class="required">*</span>المبلغ المتفق عليه (السعر الكلي للمشروع)
+            </label>
+            <div style="display:flex; flex-direction:column; gap:0.75rem;">
                 <div style="position:relative;">
-                    <input type="number" id="formAgreedAmountSYP" class="form-input" min="0" value="${data.agreedAmountSYP}" placeholder="ليرة سورية">
-                    <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--color-gray); font-size:0.85rem; pointer-events:none;">ل.س</span>
+                    <input type="number" id="formAgreedAmountSYP" class="form-input big-price" min="0" value="${data.agreedAmountSYP}" placeholder="مثال: 5000000 (خمسة ملايين ليرة)" style="font-size:1.15rem; padding:0.9rem 1rem 0.9rem 3.6rem; border-width:2px;">
+                    <span style="position:absolute; left:16px; top:50%; transform:translateY(-50%); color:var(--color-gold-dark); font-size:1rem; font-weight:700; pointer-events:none; letter-spacing:0.3px;">ل.س</span>
                 </div>
                 <div style="position:relative;">
-                    <input type="number" id="formAgreedAmountUSD" class="form-input" min="0" value="${data.agreedAmountUSD}" placeholder="دولار أمريكي">
-                    <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--color-gray); font-size:0.85rem; pointer-events:none;">$</span>
+                    <input type="number" id="formAgreedAmountUSD" class="form-input big-price" min="0" value="${data.agreedAmountUSD}" placeholder="مثال: 2000 (ألفين دولار)" style="font-size:1.15rem; padding:0.9rem 1rem 0.9rem 3.6rem; border-width:2px;">
+                    <span style="position:absolute; left:16px; top:50%; transform:translateY(-50%); color:var(--color-gold-dark); font-size:1rem; font-weight:700; pointer-events:none; letter-spacing:0.3px;">$</span>
                 </div>
             </div>
         </div>
 
-        <hr style="border:none; border-top:1px solid var(--color-gray-light); margin:2rem 0;">
+        <hr style="border:none; border-top:1.5px solid var(--color-gold-dark); margin:1.7rem 0;">
 
         <div class="section-heading" style="margin-bottom:1rem;">
-            <h3 style="font-size:1.15rem; font-family:'Playfair Display',serif;">
-                <i class="fas fa-hand-holding-heart" style="color:var(--color-gold-dark);"></i>
-                الدفعات المستلمة من العميل
+            <h3 style="font-size:1.2rem; font-family:'Cairo',sans-serif; font-weight:700; color:var(--color-black);">
+                <i class="fas fa-money-bill-wave" style="color:var(--color-gold-dark); margin-left:0.3rem;"></i>
+                الدفعات اللي استلمناها من العميل (واضح تحت كل دفعة وين صار الفلوس)
             </h3>
             <button type="button" class="btn btn-outline-gold btn-sm" onclick="modalAddClientPayment()">
                 <i class="fas fa-plus"></i>
-                إضافة دفعة مستلمة
+                إضافة دفعة جديدة
             </button>
+        </div>
+        <div style="background:#fff6e6; border:1.5px dashed #d4a942; border-radius:10px; padding:0.8rem 1rem; margin-bottom:1rem; font-size:0.9rem; color:#7a5a1a; line-height:1.7;">
+            <i class="fas fa-lightbulb" style="color:#d4a942; margin-left:0.3rem;"></i>
+            <strong>كيف العمل:</strong> لكل دفعة مستلمة (مثلاً 1,000,000 ليرة) اكتب تحتها بالتفصيل وين صار الفلوس: كم أخذ النجار، كم أخذ الحداد، كم أنفقت على مواد البناء... وهكذا.
         </div>
 
         <div class="craftsmen-table-wrapper">
             <table class="craftsmen-table" id="modalClientPaymentsTable">
                 <thead>
                     <tr>
-                        <th style="width:20%;">ل.س</th>
-                        <th style="width:20%;">$</th>
-                        <th>اسم المادة</th>
-                        <th style="width:20%;">تاريخ الاستلام</th>
+                        <th style="width:14%;">ل.س</th>
+                        <th style="width:14%;">$</th>
+                        <th>اسم / وصف الدفعة</th>
+                        <th style="width:15%;">تاريخ الاستلام</th>
                         <th style="width:6%;"></th>
                     </tr>
                 </thead>
                 <tbody id="modalClientPaymentsTbody">
-                    ${(data.clientPayments || []).map(cp => `
-                        <tr data-mcpay-id="${cp.id}">
-                            <td>
-                                <input type="number" min="0" class="mcpay-amount-syp big-price" value="${cp.amountSYP}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="number" min="0" class="mcpay-amount-usd big-price" value="${cp.amountUSD}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="text" class="mcpay-material-name" value="${escapeHtml(cp.materialName || '')}" placeholder="اسم المادة">
-                            </td>
-                            <td>
-                                <input type="date" class="mcpay-date" value="${formatDateInput(cp.date)}">
-                            </td>
-                            <td>
-                                <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemoveClientPayment(this)">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                            </td>
-                        </tr>
-                    `).join('')}
+                    ${(data.clientPayments || []).map((cp, idx) => renderModalClientPaymentRowFull(cp, idx)).join('')}
                 </tbody>
             </table>
         </div>
 
-        <hr style="border:none; border-top:1px solid var(--color-gray-light); margin:2rem 0;">
+        <hr style="border:none; border-top:1px solid var(--color-gray-light); margin:1.5rem 0;">
 
         <div class="section-heading" style="margin-bottom:1rem;">
-            <h3 style="font-size:1.15rem; font-family:'Playfair Display',serif;">
-                <i class="fas fa-hard-hat" style="color:var(--color-gold-dark);"></i>
-                المدفوعات والحرفيين
-            </h3>
-            <button type="button" class="btn btn-outline-gold btn-sm" onclick="modalAddPayment()">
-                <i class="fas fa-plus"></i>
-                إضافة دفعة
-            </button>
-        </div>
-
-        <div class="craftsmen-table-wrapper">
-            <table class="craftsmen-table" id="modalCraftsmenTable">
-                <thead>
-                    <tr>
-                        <th style="width:14%;">ل.س</th>
-                        <th style="width:14%;">$</th>
-                        <th style="width:14%;">نوع الحرفي</th>
-                        <th>اسم الحرفي</th>
-                        <th>التفاصيل</th>
-                        <th style="width:16%;">التاريخ</th>
-                        <th style="width:6%;"></th>
-                    </tr>
-                </thead>
-                <tbody id="modalCraftsmenTbody">
-                    ${data.payments.map(p => `
-                        <tr data-mpay-id="${p.id}">
-                            <td>
-                                <input type="number" min="0" class="mpay-amount-syp big-price" value="${p.amountSYP}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="number" min="0" class="mpay-amount-usd big-price" value="${p.amountUSD}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="text" class="mpay-type" value="${escapeHtml(p.craftsmanType)}" placeholder="مثال: نجار">
-                            </td>
-                            <td>
-                                <input type="text" class="mpay-name" value="${escapeHtml(p.craftsmanName)}" placeholder="اسم الحرفي">
-                            </td>
-                            <td>
-                                <input type="text" class="mpay-description" value="${escapeHtml(p.description || '')}" placeholder="التفاصيل">
-                            </td>
-                            <td>
-                                <input type="date" class="mpay-date" value="${formatDateInput(p.date)}">
-                            </td>
-                            <td>
-                                <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemovePayment(this)">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                            </td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-
-        <hr style="border:none; border-top:1px solid var(--color-gray-light); margin:2rem 0;">
-
-        <div class="section-heading" style="margin-bottom:1rem;">
-            <h3 style="font-size:1.15rem; font-family:'Playfair Display',serif;">
-                <i class="fas fa-boxes-stacked" style="color:var(--color-gold-dark);"></i>
-                أسعار المواد والمستلزمات
-            </h3>
-            <button type="button" class="btn btn-outline-gold btn-sm" onclick="modalAddMaterial()">
-                <i class="fas fa-plus"></i>
-                إضافة مادة
-            </button>
-        </div>
-
-        <div class="craftsmen-table-wrapper">
-            <table class="craftsmen-table" id="modalMaterialsTable">
-                <thead>
-                    <tr>
-                        <th style="width:17%;">ل.س</th>
-                        <th style="width:17%;">$</th>
-                        <th>اسم المادة</th>
-                        <th style="width:20%;">التاريخ</th>
-                        <th style="width:6%;"></th>
-                    </tr>
-                </thead>
-                <tbody id="modalMaterialsTbody">
-                    ${(data.materials || []).map(m => `
-                        <tr data-mmat-id="${m.id}">
-                            <td>
-                                <input type="number" min="0" class="mmat-amount-syp" value="${m.amountSYP}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="number" min="0" class="mmat-amount-usd" value="${m.amountUSD}" placeholder="0">
-                            </td>
-                            <td>
-                                <input type="text" class="mmat-name" value="${escapeHtml(m.materialName)}" placeholder="مثال: سمنت">
-                            </td>
-                            <td>
-                                <input type="date" class="mmat-date" value="${formatDateInput(m.date)}">
-                            </td>
-                            <td>
-                                <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemoveMaterial(this)">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                            </td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-
-        <hr style="border:none; border-top:1px solid var(--color-gray-light); margin:2rem 0;">
-
-        <div class="section-heading" style="margin-bottom:1rem;">
-            <h3 style="font-size:1.15rem; font-family:'Playfair Display',serif;">
+            <h3 style="font-size:1.1rem; font-family:'Playfair Display',serif;">
                 <i class="fas fa-images" style="color:var(--color-gold-dark);"></i>
                 صور المنشئة والموقع
             </h3>
@@ -3661,145 +5107,157 @@ function renderInvoiceFormModal(invoice) {
     `;
 }
 
-function modalAddPayment() {
-    const tbody = document.getElementById('modalCraftsmenTbody');
-    if (!tbody) return;
-    const tempId = 'new_' + Date.now();
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-mpay-id', tempId);
-    tr.innerHTML = `
-        <td>
-            <input type="number" min="0" class="mpay-amount-syp big-price" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="number" min="0" class="mpay-amount-usd big-price" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="text" class="mpay-type" placeholder="مثال: نجار">
-        </td>
-        <td>
-            <input type="text" class="mpay-name" placeholder="اسم الحرفي">
-        </td>
-        <td>
-            <input type="text" class="mpay-description" placeholder="التفاصيل">
-        </td>
-        <td>
-            <input type="date" class="mpay-date" value="${todayStr()}">
-        </td>
-        <td>
-            <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemovePayment(this)">
-                <i class="fas fa-times"></i>
-            </button>
-        </td>
-    `;
-    tbody.appendChild(tr);
-}
+// ============================================
+// دوال المودال Nested الخاصة (حرفيين + مواد)
+// ============================================
 
-function modalRemovePayment(btn) {
-    const tbody = document.getElementById('modalCraftsmenTbody');
-    if (!tbody) return;
-    const rows = tbody.querySelectorAll('tr');
-    if (rows.length <= 1) {
-        toast('تنبيه', 'يجب أن يبقى صف واحد على الأقل (يمكنك تركه فارغاً)', 'warning');
-        return;
+function modalAddNestedCraftsman(mcpayBlockId) {
+    try {
+        const table = document.querySelector(`table[data-modal-nested-craftsmen-table="${mcpayBlockId}"]`);
+        if (!table) { toast('خطأ تقني', 'لم يتم إيجاد جدول الحرفيين — جرب إغلاق المودال وفتحه مرة ثانية', 'error'); return; }
+        let tbody = table.querySelector('tbody');
+        if (!tbody) { tbody = document.createElement('tbody'); table.appendChild(tbody); }
+        const emptyMsg = tbody.querySelector(`tr[data-modal-empty-nested-craftsmen="${mcpayBlockId}"]`);
+        if (emptyMsg) emptyMsg.remove();
+        const tempId = 'new_mnc_' + Date.now() + Math.floor(Math.random() * 10000);
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-modal-nested-craftsman', tempId);
+        let profSelectHtml;
+        try {
+            profSelectHtml = getProfessionSelectHtml('', `class="modal-nested-craftsman-type" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;"`, true);
+        } catch (e) {
+            profSelectHtml = `<input type="text" class="modal-nested-craftsman-type" placeholder="نوع الوظيفة (مثل: نجار / كهربائي)" style="width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #d4af37 !important; background:#fff !important; color:#000 !important; display:block !important;">`;
+        }
+        tr.innerHTML = `
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-craftsman-syp" min="0" value="0" placeholder="مثل 200000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-craftsman-usd" min="0" value="0" placeholder="مثل 100" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;">
+                <div style="display:flex; flex-direction:column; gap:0.35rem; min-width:0;">
+                    ${profSelectHtml}
+                    <input type="text" class="modal-nested-craftsman-type-other" placeholder="اكتب نوع الوظيفة هنا..." style="display:none; width:100%; padding:0.5rem 0.65rem; font-size:0.9rem; min-height:36px; border:1.5px solid #c9a235; background:#ffffff; color:#000000;">
+                    <input type="text" class="modal-nested-craftsman-name" placeholder="اسم الحرفي: مثلاً أبو محمد" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000 !important;">
+                </div>
+            </td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="modal-nested-craftsman-date" value="${todayStr()}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="modalRemoveNestedCraftsman(this)"><i class="fas fa-times"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+        try { attachCraftsmanProfessionToggle(tr, 'modal-nested-craftsman-type', 'modal-nested-craftsman-type-other'); } catch (_) {}
+    } catch (err) {
+        console.error('modalAddNestedCraftsman error:', err);
+        toast('خطأ', 'تعذر إضافة حرفي جديد: ' + (err.message || 'خطأ غير معروف'), 'error');
     }
-    btn.closest('tr').remove();
 }
 
-function modalAddMaterial() {
-    const tbody = document.getElementById('modalMaterialsTbody');
-    if (!tbody) return;
-    const tempId = 'new_mat_' + Date.now();
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-mmat-id', tempId);
-    tr.innerHTML = `
-        <td>
-            <input type="number" min="0" class="mmat-amount-syp" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="number" min="0" class="mmat-amount-usd" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="text" class="mmat-name" placeholder="اسم المادة">
-        </td>
-        <td>
-            <input type="date" class="mmat-date" value="${todayStr()}">
-        </td>
-        <td>
-            <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemoveMaterial(this)">
-                <i class="fas fa-times"></i>
-            </button>
-        </td>
-    `;
-    tbody.appendChild(tr);
-}
-
-function modalRemoveMaterial(btn) {
-    const tbody = document.getElementById('modalMaterialsTbody');
-    if (!tbody) return;
-    const rows = tbody.querySelectorAll('tr');
-    if (rows.length <= 1) {
-        toast('تنبيه', 'يجب أن يبقى صف واحد على الأقل (يمكنك تركه فارغاً)', 'warning');
-        return;
+function modalRemoveNestedCraftsman(btn) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const tbody = tr.parentElement;
+    const table = tbody?.parentElement;
+    const mcpayBlockId = table ? table.getAttribute('data-modal-nested-craftsmen-table') : null;
+    tr.remove();
+    if (mcpayBlockId && tbody) {
+        const remaining = tbody.querySelectorAll('tr[data-modal-nested-craftsman]');
+        const tfoot = table ? table.querySelector('tfoot') : null;
+        if (remaining.length === 0) {
+            const oldEmpty = tbody.querySelector(`tr[data-modal-empty-nested-craftsmen="${mcpayBlockId}"]`);
+            if (oldEmpty) oldEmpty.remove();
+            if (tfoot) tfoot.remove();
+            setTimeout(() => modalAddNestedCraftsman(mcpayBlockId), 0);
+        }
     }
-    btn.closest('tr').remove();
+}
+
+function modalAddNestedMaterial(mcpayBlockId) {
+    try {
+        const table = document.querySelector(`table[data-modal-nested-materials-table="${mcpayBlockId}"]`);
+        if (!table) { toast('خطأ تقني', 'لم يتم إيجاد جدول المواد — جرب إغلاق المودال وفتحه مرة ثانية', 'error'); return; }
+        let tbody = table.querySelector('tbody');
+        if (!tbody) { tbody = document.createElement('tbody'); table.appendChild(tbody); }
+        const emptyMsg = tbody.querySelector(`tr[data-modal-empty-nested-materials="${mcpayBlockId}"]`);
+        if (emptyMsg) emptyMsg.remove();
+        const tempId = 'new_mnm_' + Date.now() + Math.floor(Math.random() * 10000);
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-modal-nested-material', tempId);
+        tr.innerHTML = `
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-material-syp" min="0" value="0" placeholder="مثل 150000" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="number" class="modal-nested-material-usd" min="0" value="0" placeholder="مثل 50" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.95rem !important; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important; min-height:40px;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell;"><input type="text" class="modal-nested-material-name" placeholder="اسم المادة: مثلاً أسمنت / حديد / طوب" style="display:block !important; width:100% !important; padding:0.5rem 0.65rem !important; font-size:0.96rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:17%;"><input type="date" class="modal-nested-material-date" value="${todayStr()}" style="display:block !important; width:100% !important; padding:0.4rem 0.5rem !important; font-size:0.85rem !important; min-height:38px; border:1.5px solid #c9a235 !important; background:#ffffff !important; color:#000000 !important;"></td>
+            <td style="padding:0.5rem; vertical-align:middle; display:table-cell; width:5%;">
+                <button type="button" class="icon-btn icon-btn-delete" style="padding:0.3rem 0.45rem; font-size:0.85rem; min-width:32px; min-height:32px;" onclick="modalRemoveNestedMaterial(this)"><i class="fas fa-times"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    } catch (err) {
+        console.error('modalAddNestedMaterial error:', err);
+        toast('خطأ', 'تعذر إضافة مادة جديدة: ' + (err.message || 'خطأ غير معروف'), 'error');
+    }
+}
+
+function modalRemoveNestedMaterial(btn) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const tbody = tr.parentElement;
+    const table = tbody?.parentElement;
+    const mcpayBlockId = table ? table.getAttribute('data-modal-nested-materials-table') : null;
+    tr.remove();
+    if (mcpayBlockId && tbody) {
+        const remaining = tbody.querySelectorAll('tr[data-modal-nested-material]');
+        const tfoot = table ? table.querySelector('tfoot') : null;
+        if (remaining.length === 0) {
+            const oldEmpty = tbody.querySelector(`tr[data-modal-empty-nested-materials="${mcpayBlockId}"]`);
+            if (oldEmpty) oldEmpty.remove();
+            if (tfoot) tfoot.remove();
+            setTimeout(() => modalAddNestedMaterial(mcpayBlockId), 0);
+        }
+    }
 }
 
 function modalAddClientPayment() {
     const tbody = document.getElementById('modalClientPaymentsTbody');
     if (!tbody) return;
     const tempId = 'new_mcpay_' + Date.now();
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-mcpay-id', tempId);
-    tr.innerHTML = `
-        <td>
-            <input type="number" min="0" class="mcpay-amount-syp big-price" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="number" min="0" class="mcpay-amount-usd big-price" value="0" placeholder="0">
-        </td>
-        <td>
-            <input type="text" class="mcpay-material-name" placeholder="اسم المادة">
-        </td>
-        <td>
-            <input type="date" class="mcpay-date" value="${todayStr()}">
-        </td>
-        <td>
-            <button type="button" class="icon-btn icon-btn-delete" onclick="modalRemoveClientPayment(this)">
-                <i class="fas fa-times"></i>
-            </button>
-        </td>
-    `;
-    tbody.appendChild(tr);
+    const dummyCp = {
+        id: tempId,
+        amountSYP: 0,
+        amountUSD: 0,
+        materialName: '',
+        date: todayStr(),
+        craftsmen: [],
+        materials: []
+    };
+    const wrapHtml = renderModalClientPaymentRowFull(dummyCp, 0);
+    const tempContainer = document.createElement('tbody');
+    tempContainer.innerHTML = wrapHtml;
+    const nodes = Array.from(tempContainer.children);
+    nodes.forEach(n => tbody.appendChild(n));
+    setTimeout(() => {
+        const block = document.querySelector(`tr[data-mcpay-block="mcpay-block-${tempId}"]`);
+        if (block) {
+            document.querySelectorAll(`tr[data-mcpay-nested="mcpay-block-${tempId}"] tr[data-modal-nested-craftsman]`).forEach(r => {
+                try { attachCraftsmanProfessionToggle(r, 'modal-nested-craftsman-type', 'modal-nested-craftsman-type-other'); } catch (_) {}
+            });
+        }
+    }, 20);
 }
 
 function modalRemoveClientPayment(btn) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
     const tbody = document.getElementById('modalClientPaymentsTbody');
     if (!tbody) return;
-    const rows = tbody.querySelectorAll('tr');
-    if (rows.length <= 1) {
-        toast('تنبيه', 'يجب أن يبقى صف واحد على الأقل (يمكنك تركه فارغاً)', 'warning');
+    const rowsWithId = tbody.querySelectorAll('tr[data-mcpay-id]');
+    if (rowsWithId.length <= 1) {
+        toast('تنبيه', 'يجب أن يبقى دفعة واحدة على الأقل (يمكنك تركها فارغة)', 'warning');
         return;
     }
-    btn.closest('tr').remove();
-}
-
-function collectModalPayments() {
-    const tbody = document.getElementById('modalCraftsmenTbody');
-    if (!tbody) return [];
-    const rows = tbody.querySelectorAll('tr[data-mpay-id]');
-    const payments = [];
-    rows.forEach(row => {
-        const id = row.getAttribute('data-mpay-id');
-        const amountSYP = row.querySelector('.mpay-amount-syp')?.value;
-        const amountUSD = row.querySelector('.mpay-amount-usd')?.value;
-        const type = row.querySelector('.mpay-type')?.value;
-        const name = row.querySelector('.mpay-name')?.value;
-        const description = row.querySelector('.mpay-description')?.value;
-        const date = row.querySelector('.mpay-date')?.value;
-        payments.push({ id, amountSYP, amountUSD, craftsmanType: type, craftsmanName: name, description, date });
-    });
-    return payments.filter(p => (Number(p.amountSYP) > 0 || Number(p.amountUSD) > 0) || p.craftsmanName);
+    const blockId = tr.getAttribute('data-mcpay-block');
+    const nested = blockId ? document.querySelector(`tr[data-mcpay-nested="${blockId}"]`) : null;
+    if (nested) nested.remove();
+    tr.remove();
 }
 
 function collectModalClientPayments() {
@@ -3809,38 +5267,50 @@ function collectModalClientPayments() {
     const cps = [];
     rows.forEach(row => {
         const id = row.getAttribute('data-mcpay-id');
+        const blockId = row.getAttribute('data-mcpay-block');
         const amountSYP = row.querySelector('.mcpay-amount-syp')?.value;
         const amountUSD = row.querySelector('.mcpay-amount-usd')?.value;
         const materialName = row.querySelector('.mcpay-material-name')?.value;
         const date = row.querySelector('.mcpay-date')?.value;
-        cps.push({ id, amountSYP, amountUSD, materialName, date });
+        const craftsmenArr = [];
+        const materialsArr = [];
+        if (blockId) {
+            const craftTable = document.querySelector(`table[data-modal-nested-craftsmen-table="${blockId}"]`);
+            if (craftTable) {
+                craftTable.querySelectorAll('tbody tr[data-modal-nested-craftsman]').forEach(ctr => {
+                    const cid = ctr.getAttribute('data-modal-nested-craftsman') || generateId('ncraft');
+                    const cSYP = Number(ctr.querySelector('.modal-nested-craftsman-syp')?.value) || 0;
+                    const cUSD = Number(ctr.querySelector('.modal-nested-craftsman-usd')?.value) || 0;
+                    const cType = getCraftsmanProfessionFromRow(ctr, 'modal-nested-craftsman-type', 'modal-nested-craftsman-type-other');
+                    const cName = (ctr.querySelector('.modal-nested-craftsman-name')?.value || '').trim();
+                    const cDate = ctr.querySelector('.modal-nested-craftsman-date')?.value;
+                    if (cSYP === 0 && cUSD === 0 && !cType && !cName) return;
+                    craftsmenArr.push({ id: cid, amountSYP: cSYP, amountUSD: cUSD, craftsmanType: cType, craftsmanName: cName, date: cDate, description: (cType || '') + ' ' + (cName || '') });
+                });
+            }
+            const matTable = document.querySelector(`table[data-modal-nested-materials-table="${blockId}"]`);
+            if (matTable) {
+                matTable.querySelectorAll('tbody tr[data-modal-nested-material]').forEach(mtr => {
+                    const mid = mtr.getAttribute('data-modal-nested-material') || generateId('nmat');
+                    const mSYP = Number(mtr.querySelector('.modal-nested-material-syp')?.value) || 0;
+                    const mUSD = Number(mtr.querySelector('.modal-nested-material-usd')?.value) || 0;
+                    const mName = (mtr.querySelector('.modal-nested-material-name')?.value || '').trim();
+                    const mDate = mtr.querySelector('.modal-nested-material-date')?.value;
+                    if (mSYP === 0 && mUSD === 0 && !mName) return;
+                    materialsArr.push({ id: mid, amountSYP: mSYP, amountUSD: mUSD, materialName: mName, date: mDate });
+                });
+            }
+        }
+        cps.push({ id, amountSYP, amountUSD, materialName, date, craftsmen: craftsmenArr, materials: materialsArr });
     });
-    return cps.filter(cp => (Number(cp.amountSYP) > 0 || Number(cp.amountUSD) > 0) || cp.materialName);
-}
-
-function collectModalMaterials() {
-    const tbody = document.getElementById('modalMaterialsTbody');
-    if (!tbody) return [];
-    const rows = tbody.querySelectorAll('tr[data-mmat-id]');
-    const materials = [];
-    rows.forEach(row => {
-        const id = row.getAttribute('data-mmat-id');
-        const amountSYP = row.querySelector('.mmat-amount-syp')?.value;
-        const amountUSD = row.querySelector('.mmat-amount-usd')?.value;
-        const name = row.querySelector('.mmat-name')?.value;
-        const date = row.querySelector('.mmat-date')?.value;
-        materials.push({ id, amountSYP, amountUSD, materialName: name, date });
-    });
-    return materials.filter(m => (Number(m.amountSYP) > 0 || Number(m.amountUSD) > 0) || m.materialName);
+    return cps;
 }
 
 function submitInvoiceForm(invoiceId) {
     const customerName = (document.getElementById('formCustomerName')?.value || '').trim();
     const agreedAmountSYP = Number(document.getElementById('formAgreedAmountSYP')?.value || 0);
     const agreedAmountUSD = Number(document.getElementById('formAgreedAmountUSD')?.value || 0);
-    const payments = collectModalPayments();
     const clientPayments = collectModalClientPayments();
-    const materials = collectModalMaterials();
     const sitePhotos = [...currentModalSitePhotos];
 
     if (!customerName) {
@@ -3855,12 +5325,25 @@ function submitInvoiceForm(invoiceId) {
         return;
     }
 
+    let finalInvoice = null;
     if (invoiceId) {
-        updateInvoice(invoiceId, { customerName, agreedAmountSYP, agreedAmountUSD, payments, clientPayments, materials, sitePhotos });
+        finalInvoice = updateInvoice(invoiceId, { customerName, agreedAmountSYP, agreedAmountUSD, clientPayments, payments: [], materials: [], sitePhotos });
         toast('تم التحديث', 'تم تعديل الفاتورة بنجاح', 'success');
     } else {
-        const created = createInvoice({ customerName, agreedAmountSYP, agreedAmountUSD, payments, clientPayments, materials, sitePhotos });
+        finalInvoice = createInvoice({ customerName, agreedAmountSYP, agreedAmountUSD, clientPayments, payments: [], materials: [], sitePhotos });
         toast('تم الإنشاء', 'تم إنشاء الفاتورة بنجاح', 'success');
+    }
+
+    if (finalInvoice) {
+        const syncRes = syncInvoiceCraftsmenToWorkers(finalInvoice.id, customerName, finalInvoice.clientPayments || []);
+        const totalSync = syncRes.linked + syncRes.updated + syncRes.removed;
+        if (totalSync > 0) {
+            let parts = [];
+            if (syncRes.linked) parts.push(`${syncRes.linked} دفعة جديدة`);
+            if (syncRes.updated) parts.push(`${syncRes.updated} تحديث`);
+            if (syncRes.removed) parts.push(`${syncRes.removed} حذف`);
+            setTimeout(() => toast('🔗 ربط تلقائي بأجور العمال', parts.join('، ') + ' تحت أسماء العمال المطابقة', 'info'), 600);
+        }
     }
 
     currentModalSitePhotos = [];
@@ -3881,30 +5364,41 @@ function confirmDeleteInvoice(invoiceId) {
             <div style="width:70px; height:70px; margin:0 auto 1.5rem; border-radius:50%; background:rgba(239,68,68,0.1); color:#dc2626; display:flex; align-items:center; justify-content:center; font-size:1.8rem;">
                 <i class="fas fa-trash-alt"></i>
             </div>
-            <h3 style="font-family:'Playfair Display', serif; font-size:1.4rem; margin-bottom:0.5rem; color:var(--color-black);">تأكيد الحذف</h3>
-            <p style="color:var(--color-gray); margin-bottom:0.5rem;">
-                هل أنت متأكد من حذف هذه الفاتورة؟
+            <h3 style="font-family:'Cairo', sans-serif; font-size:1.4rem; margin-bottom:0.5rem; color:var(--color-black); font-weight:700;">تأكيد حذف الفاتورة</h3>
+            <p style="color:var(--color-gray); margin-bottom:0.8rem;">
+                هل أنت متأكد 100% من حذف هالفاتورة؟
             </p>
             <p style="background:var(--color-cream); padding:0.8rem 1rem; border-radius:var(--radius-sm); color:var(--color-black); font-weight:600; line-height:1.8;">
                 العميل: ${escapeHtml(invoice.customerName)}
                 <br>
                 <span style="color:var(--color-gray); font-weight:500; font-size:0.85rem;">
-                    المبلغ: ${formatCurrencySYP(invoice.agreedAmountSYP)} / ${formatCurrencyUSD(invoice.agreedAmountUSD)}
+                    السعر المتفق عليه: ${formatCurrencySYP(invoice.agreedAmountSYP)} / ${formatCurrencyUSD(invoice.agreedAmountUSD)}
                 </span>
             </p>
-            <p style="color:#dc2626; font-size:0.85rem; margin-top:1rem;">
-                <i class="fas fa-exclamation-circle" style="margin-left:0.3rem;"></i>
-                هذه العملية لا يمكن التراجع عنها
-            </p>
+            <div style="background:#fff4f4; border:1.5px dashed #ef4444; border-radius:10px; padding:0.8rem 1rem; margin-top:1rem; text-align:right;">
+                <p style="color:#b91c1c; font-size:0.88rem; margin:0; line-height:1.9; font-weight:600;">
+                    🔴 <strong>مهم جداً:</strong> بعد تأكيد الحذف → الفاتورة رح تنمسح نهائياً من:<br>
+                    &nbsp;&nbsp;✅ جهازك الحالي<br>
+                    &nbsp;&nbsp;✅ جميع الأجهزة التانية (جهاز جيسيكا وجهاز حسين) بعد أي مزامنة (مزامنة تلقائية كل 5 دقائق أو زر "مزامنة فورية")<br>
+                    &nbsp;&nbsp;✅ من قاعدة البيانات السحابية على الفايربيز
+                </p>
+                <p style="color:#dc2626; font-size:0.85rem; margin-top:0.7rem;">
+                    <i class="fas fa-exclamation-triangle" style="margin-left:0.3rem;"></i>
+                    هذه العملية نهائية ومفيش رجوع فيها
+                </p>
+            </div>
         </div>
     `, {
-        title: 'حذف الفاتورة',
+        title: 'حذف الفاتورة نهائياً',
         isLarge: false,
         footer: `
-            <button class="btn btn-outline" onclick="closeModal()">إلغاء</button>
-            <button class="btn btn-primary" style="background:#dc2626;" onclick="executeDeleteInvoice('${invoiceId}')">
+            <button class="btn btn-outline" onclick="closeModal()">
+                <i class="fas fa-times"></i>
+                إلغاء - لا تحذف
+            </button>
+            <button class="btn btn-primary" style="background:#dc2626; border-color:#dc2626;" onclick="executeDeleteInvoice('${invoiceId}')">
                 <i class="fas fa-trash-alt"></i>
-                تأكيد الحذف
+                نعم، احذف الفاتورة من كل مكان
             </button>
         `
     });
@@ -3912,7 +5406,7 @@ function confirmDeleteInvoice(invoiceId) {
 
 function executeDeleteInvoice(invoiceId) {
     deleteInvoice(invoiceId);
-    toast('تم الحذف', 'تم حذف الفاتورة بنجاح', 'success');
+    toast('🗑️ تم حذف الفاتورة من كل الأجهزة', 'الفاتورة انمسحت نهائياً. بعد 5 دقائق أو مزامنة فورية رح تختفي من كل الأجهزة التانية.', 'success', 5000);
     closeModal();
     renderCurrentRoute();
 }
@@ -4473,6 +5967,13 @@ window.handleLogin = handleLogin;
 window.handleLogout = handleLogout;
 window.openCreateInvoiceModal = openCreateInvoiceModal;
 window.openEditInvoiceModal = openEditInvoiceModal;
+// ====== دوال إدارة الوظائف والمهن (v3.16) ======
+window.openProfessionWorkersModal = openProfessionWorkersModal;
+window.openProfessionCreate = openProfessionCreate;
+window.openProfessionEdit = openProfessionEdit;
+window.handleReorderProfession = handleReorderProfession;
+window.confirmDeleteProfession = confirmDeleteProfession;
+window.reorderProfession = reorderProfession;
 window.confirmDeleteInvoice = confirmDeleteInvoice;
 window.executeDeleteInvoice = executeDeleteInvoice;
 window.changePasswordModal = changePasswordModal;
@@ -4487,10 +5988,8 @@ window.addMaterialRow = addMaterialRow;
 window.removeMaterialRow = removeMaterialRow;
 window.updateAmountsLive = updateAmountsLive;
 window.saveInvoiceChanges = saveInvoiceChanges;
-window.modalAddPayment = modalAddPayment;
-window.modalRemovePayment = modalRemovePayment;
-window.modalAddMaterial = modalAddMaterial;
-window.modalRemoveMaterial = modalRemoveMaterial;
+// ⚠️ تم حذف السطور المكسورة: modalAddPayment/RemovePayment/AddMaterial/RemoveMaterial
+// (دوال محذوفة سابقاً لكن بقيت window assignments → كانت توقف تنفيذ كل التسجيلات اللاحقة)
 window.submitInvoiceForm = submitInvoiceForm;
 window.exportInvoicePDF = exportInvoicePDF;
 window.handleSitePhotosUpload = handleSitePhotosUpload;
@@ -4500,3 +5999,19 @@ window.removeModalSitePhoto = removeModalSitePhoto;
 window.forceSyncNow = forceSyncNow;
 window.showSyncStatus = showSyncStatus;
 window.initCloudSync = initCloudSync;
+
+// ====== دوال nested لصفحة الفاتورة (onclick exposure) ======
+window.addClientPaymentRow = addClientPaymentRow;
+window.removeClientPaymentRow = removeClientPaymentRow;
+window.addNestedCraftsmanRow = addNestedCraftsmanRow;
+window.removeNestedCraftsman = removeNestedCraftsman;
+window.addNestedMaterialRow = addNestedMaterialRow;
+window.removeNestedMaterial = removeNestedMaterial;
+
+// ====== دوال nested للمودال (onclick exposure) ======
+window.modalAddClientPayment = modalAddClientPayment;
+window.modalRemoveClientPayment = modalRemoveClientPayment;
+window.modalAddNestedCraftsman = modalAddNestedCraftsman;
+window.modalRemoveNestedCraftsman = modalRemoveNestedCraftsman;
+window.modalAddNestedMaterial = modalAddNestedMaterial;
+window.modalRemoveNestedMaterial = modalRemoveNestedMaterial;
