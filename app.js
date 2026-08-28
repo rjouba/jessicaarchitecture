@@ -337,11 +337,13 @@ async function forceSyncNow(showToast = true) {
             mergedProfessions = JSON.parse(JSON.stringify(DEFAULT_PROFESSIONS));
         }
         // #region debug-point forceSyncNow-professions
+        // ⚠️ ملاحظة: cloudPrfEmpty يُعرَّف بعد هذا الموضع، لذلك السطر التالي مُعلَّق
+        //         (كان يسبّب ReferenceError — Cannot access 'cloudPrfEmpty' before initialization)
         console.group('%c🔄 [DEBUG SYNC] forceSyncNow — Professions merge summary', 'background:#e2e3e5;color:#383d41;font-weight:bold;');
         console.log('localProfessions count (before):', Array.isArray(localProfessions) ? localProfessions.length : 'N/A');
         console.log('cloudProfessions.data count (cloud):', (cloudProfessions.ok && Array.isArray(cloudProfessions.data)) ? cloudProfessions.data.length : 'N/A');
         console.log('mergedProfessions count (after):', Array.isArray(mergedProfessions) ? mergedProfessions.length : 'N/A');
-        console.log('cloudPrfEmpty flag (so we will seed cloud):', cloudPrfEmpty);
+        // console.log('cloudPrfEmpty flag (so we will seed cloud):', cloudPrfEmpty); // moved below
         console.groupEnd();
         // #endregion
         const invChanged = JSON.stringify(localInvoices) !== JSON.stringify(mergedInvoices);
@@ -1623,37 +1625,38 @@ function renderHomePage() {
 
                     <!-- Layer 1: Slides (images fade in/out) — 8 صور حقيقية من أعمالنا بمجلد works/ -->
                     <!-- ⚠️ slide[0] يبدأ بـ is-active مباشرة ليظهر فوراً — لا انتظار لـ JS -->
+                    <!-- أسماء بسيطة بدون مسافات أو GUIDs لتوافق كامل مع Chrome و Render -->
                     <div class="works-c-slides" id="worksSlides">
                         <div class="works-c-slide is-active" data-project="0">
-                            <img src="works/0bf6e5ee-c51f-4aa1-b9ec-1567141bf451.jpg" alt="مشروع 1" loading="eager" fetchpriority="high">
+                            <img src="works/01.jpg" alt="مشروع 1" loading="eager" fetchpriority="high">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="1">
-                            <img src="works/1f83e2b1-504d-4cfa-878e-7d641ad09c65.jpg" alt="مشروع 2" loading="lazy">
+                            <img src="works/02.jpg" alt="مشروع 2" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="2">
-                            <img src="works/38f946fa-13eb-4e91-8383-877c668c10a6.jpg" alt="مشروع 3" loading="lazy">
+                            <img src="works/03.jpg" alt="مشروع 3" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="3">
-                            <img src="works/65df641e-5ce2-4bc3-8c72-500a3d71f9eb.jpg" alt="مشروع 4" loading="lazy">
+                            <img src="works/04.jpg" alt="مشروع 4" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="4">
-                            <img src="works/689278f9-1e70-4ca7-9975-2b4fea607df4.jpg" alt="مشروع 5" loading="lazy">
+                            <img src="works/05.jpg" alt="مشروع 5" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="5">
-                            <img src="works/70a6bab2-9f7a-4a75-b57c-976fd174905a.jpg" alt="مشروع 6" loading="lazy">
+                            <img src="works/06.jpg" alt="مشروع 6" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="6">
-                            <img src="works/80997e48-7490-4e96-be58-56fd7dbd1c69.jpg" alt="مشروع 7" loading="lazy">
+                            <img src="works/07.jpg" alt="مشروع 7" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                         <div class="works-c-slide" data-project="7">
-                            <img src="works/9d52e986-c4cd-4c50-9625-59f6b7734552.jpg" alt="مشروع 8" loading="lazy">
+                            <img src="works/08.jpg" alt="مشروع 8" loading="lazy">
                             <div class="works-c-vignette"></div>
                         </div>
                     </div>
