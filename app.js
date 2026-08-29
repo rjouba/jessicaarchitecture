@@ -352,18 +352,10 @@ async function forceSyncNow(showToast = true) {
         if (cleanedWorkers.length !== localWorkers.length) safeSet(STORAGE_KEYS.WORKERS, cleanedWorkers);
         if (cleanedProfessions.length !== localProfessions.length) safeSet(STORAGE_KEYS.PROFESSIONS, cleanedProfessions);
 
-        // 🪦 ادفع tombstones المحلية الحديثة للسحابة فوراً (قبل الدمج) لتُحذف من كل الأجهزة
-        const pushTombstones = async (key, local) => {
-            const tombstones = local.filter(x => x && (x.__tombstone || x.deletedAt));
-            if (tombstones.length > 0) {
-                await cloudWrite('app_data', key, local);
-            }
-        };
-        await Promise.all([
-            pushTombstones(STORAGE_KEYS.INVOICES, cleanedInvoices),
-            pushTombstones(STORAGE_KEYS.WORKERS, cleanedWorkers),
-            pushTombstones(STORAGE_KEYS.PROFESSIONS, cleanedProfessions)
-        ]);
+        // 🪦 ادفع tombstones للسحابة بشكل آمن — بدون مسح السجلات الحية الأخرى!
+        // (الإصلاح: لا نرفع كامل المصفوفة المحلية قبل الدمج — هذا يطمس أي سجل في السحابة غير موجود محلياً)
+        // الاستراتيجية: نضيف tombstones المحلية كـ entries داخل المصفوفة المدمجة بعد القراءة من السحابة
+        // (لأن الدمج يضع timestamp أعلى على tombstone فيفوز على السجل القديم من السحابة، ثم يُحذف بالـ filter)
 
         // الآن ندمج — mergeArraysById يحذف tombstones تلقائياً
         const mergedInvoices = mergeArraysById(cleanedInvoices, cloudInvoices.data || []);
@@ -6011,22 +6003,124 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const invoices = getAllInvoices();
     if (invoices.length === 0) {
-        const demo = createInvoice({
-            customerName: '(مثال) محمد علي',
-            agreedAmountSYP: 10000000,
-            agreedAmountUSD: 500,
-            payments: [
-                { amountSYP: 3000000, amountUSD: 200, craftsmanType: 'نجار', craftsmanName: 'أحمد النجار', date: todayStr() },
-                { amountSYP: 2000000, amountUSD: 100, craftsmanType: 'دهان', craftsmanName: 'خالد الدكان', date: todayStr() }
-            ],
-            materials: [
-                { amountSYP: 1500000, amountUSD: 50, materialName: 'سمنت ورمل', date: todayStr() },
-                { amountSYP: 800000, amountUSD: 30, materialName: 'ألومنيوم وزجاج', date: todayStr() }
-            ],
-            sitePhotos: []
-        });
+        // ⚠️ إصلاح: أنشئ فاتورة المثال فقط إذا الجهاز فعلاً جديد (لا يوجد demoSeedDone) ولا يوجد فواتير في السحابة
+        // (تحقق غير متزامن — ينتظر force sync إذا لزم)
+        (async () => {
+            try {
+                if (localStorage.getItem('jk_demo_seeded') === '1') return; // تم الزرع سابقاً
+                if (!firebaseConfigValid()) {
+                    // لا يوجد Firebase (جهاز محلي) — أنشئ المثال
+                    createInvoiceLocalOnly({
+                        customerName: '(مثال) محمد علي',
+                        agreedAmountSYP: 10000000,
+                        agreedAmountUSD: 500,
+                        payments: [
+                            { amountSYP: 3000000, amountUSD: 200, craftsmanType: 'نجار', craftsmanName: 'أحمد النجار', date: todayStr() },
+                            { amountSYP: 2000000, amountUSD: 100, craftsmanType: 'دهان', craftsmanName: 'خالد الدكان', date: todayStr() }
+                        ],
+                        materials: [
+                            { amountSYP: 1500000, amountUSD: 50, materialName: 'سمنت ورمل', date: todayStr() },
+                            { amountSYP: 800000, amountUSD: 30, materialName: 'ألومنيوم وزجاج', date: todayStr() }
+                        ],
+                        sitePhotos: []
+                    });
+                    localStorage.setItem('jk_demo_seeded', '1');
+                    return;
+                }
+                // Firebase موجود — حاول جلب من السحابة أولاً
+                const r = await cloudRead('app_data', STORAGE_KEYS.INVOICES);
+                if (r.ok && Array.isArray(r.data) && r.data.length > 0) {
+                    // السحابة فيها فواتير حقيقية — اعتمد المزامنة، لا تنشئ المثال
+                    safeSetRaw(STORAGE_KEYS.INVOICES, r.data);
+                    localStorage.setItem('jk_demo_seeded', '1');
+                    return;
+                }
+                // السحابة فارغة — أنشئ المثال
+                createInvoiceLocalOnly({
+                    customerName: '(مثال) محمد علي',
+                    agreedAmountSYP: 10000000,
+                    agreedAmountUSD: 500,
+                    payments: [
+                        { amountSYP: 3000000, amountUSD: 200, craftsmanType: 'نجار', craftsmanName: 'أحمد النجار', date: todayStr() },
+                        { amountSYP: 2000000, amountUSD: 100, craftsmanType: 'دهان', craftsmanName: 'خالد الدكان', date: todayStr() }
+                    ],
+                    materials: [
+                        { amountSYP: 1500000, amountUSD: 50, materialName: 'سمنت ورمل', date: todayStr() },
+                        { amountSYP: 800000, amountUSD: 30, materialName: 'ألومنيوم وزجاج', date: todayStr() }
+                    ],
+                    sitePhotos: []
+                });
+                localStorage.setItem('jk_demo_seeded', '1');
+            } catch (e) {
+                console.warn('Demo seeding error:', e);
+            }
+        })();
     }
 });
+
+/**
+ * ينشئ فاتورة محلياً فقط — بدون رفع للسحابة (يُستخدم لفاتورة المثال التلقائية فقط)
+ * حتى لا تطمس فاتورة المثال بيانات حقيقية موجودة مسبقاً في السحابة.
+ */
+function createInvoiceLocalOnly(data) {
+    const id = generateId('inv');
+    const now = new Date().toISOString();
+    const inv = {
+        id,
+        invoiceNumber: 'DEMO-' + id.slice(-6).toUpperCase(),
+        customerName: data.customerName || '',
+        clientName: data.customerName || '',
+        buyerName: data.buyerName || '',
+        date: data.date || todayStr(),
+        agreedAmountSYP: Number(data.agreedAmountSYP) || 0,
+        agreedAmountUSD: Number(data.agreedAmountUSD) || 0,
+        siteAddress: data.siteAddress || '',
+        siteNotes: data.siteNotes || '',
+        notes: data.notes || '',
+        clientPayments: [{
+            id: generateId('cpay'),
+            amountSYP: 0,
+            amountUSD: 0,
+            materialName: '',
+            note: 'دفعة مثال',
+            date: todayStr(),
+            craftsmen: (data.payments || []).map(p => ({
+                id: generateId('ncraft'),
+                amountSYP: Number(p.amountSYP) || 0,
+                amountUSD: Number(p.amountUSD) || 0,
+                craftsmanType: p.craftsmanType || '',
+                craftsmanName: p.craftsmanName || '',
+                description: p.description || '',
+                date: p.date || todayStr()
+            })),
+            materials: (data.materials || []).map(m => ({
+                id: generateId('nmat'),
+                amountSYP: Number(m.amountSYP) || 0,
+                amountUSD: Number(m.amountUSD) || 0,
+                materialName: m.materialName || '',
+                date: m.date || todayStr()
+            }))
+        }],
+        payments: [], materials: [],
+        sitePhotos: Array.isArray(data.sitePhotos) ? data.sitePhotos : [],
+        createdAt: now,
+        updatedAt: now
+    };
+    // ⚠️ local only — safeSet يكتب محلياً، لكن بدون cloud write (استخدام safeSetRaw)
+    safeSetRaw(STORAGE_KEYS.INVOICES, [inv]);
+    return inv;
+}
+
+/**
+ * safeSet بدون رفع للسحابة (يُستخدم لفاتورة المثال فقط)
+ */
+function safeSetRaw(key, value) {
+    try {
+        localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+        console.error('Storage write (raw) error:', e);
+    }
+}
 
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
