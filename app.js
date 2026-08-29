@@ -1799,7 +1799,7 @@ function renderHomePage() {
                                 </div>
                                 <div class="contact-item-text">
                                     <h4>اتصال / واتساب</h4>
-                                    <p dir="ltr">00963 919 296 15</p>
+                                    <p dir="ltr">00963 991 929 615</p>
                                 </div>
                             </div>
 
@@ -1832,11 +1832,11 @@ function renderHomePage() {
                             <p>Architect & Interior Designer</p>
                         </div>
                         <div class="contact-card-actions">
-                            <a href="tel:0096391929615" class="btn btn-gold">
+                            <a href="tel:00963991929615" class="btn btn-gold">
                                 <i class="fas fa-phone-alt"></i>
                                 اتصال الآن
                             </a>
-                            <a href="https://wa.me/96391929615" target="_blank" class="btn btn-primary">
+                            <a href="https://wa.me/963991929615" target="_blank" class="btn btn-primary">
                                 <i class="fab fa-whatsapp"></i>
                                 واتساب
                             </a>
@@ -3627,7 +3627,7 @@ function renderInvoiceView(invoiceId) {
                             <h2>JESSICA KASSAB</h2>
                             <p>Architecture & Interior Design</p>
                             <p style="margin-top:0.8rem; font-size:0.8rem;">
-                                <i class="fas fa-phone" style="margin-left:0.4rem;"></i>00963 919 296 15
+                                <i class="fas fa-phone" style="margin-left:0.4rem;"></i>00963 991 929 615
                                 <br>
                                 <i class="fas fa-envelope" style="margin-left:0.4rem;"></i>kassabjassica@gmail.com
                                 <br>
@@ -3800,7 +3800,7 @@ function renderInvoiceView(invoiceId) {
                                     حفظ التغييرات
                                 </button>
                             ` : `
-                                <a href="tel:0096391929615" class="btn btn-gold btn-sm">
+                                <a href="tel:00963991929615" class="btn btn-gold btn-sm">
                                     <i class="fas fa-phone-alt"></i>
                                     تواصل معنا
                                 </a>
