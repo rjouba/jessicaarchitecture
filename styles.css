@@ -633,8 +633,111 @@ main {
 }
 
 /* ============================================
+   Hero — Architectural Blueprint Background
+   (Rich luxury overlay: floor plan, elevation,
+    site plan, compass, title block, scale bar)
+   ============================================ */
+
+.hero-arch-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0;
+    animation: archBgFadeIn 1.8s ease-out 0.25s forwards;
+}
+
+@keyframes archBgFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.hero-container {
+    position: relative;
+    z-index: 2;
+}
+
+/* Slow rotation for compass */
+@keyframes archCompassSpin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.arch-compass-needle {
+    transform-origin: center;
+    animation: archCompassSpin 180s linear infinite;
+}
+
+/* Subtle pulse on the title block */
+@keyframes archTitlePulse {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 0.70; }
+}
+
+.arch-title-block {
+    animation: archTitlePulse 6s ease-in-out infinite;
+}
+
+/* Subtle drifting on the site plan */
+@keyframes archSiteDrift {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(2px, -2px); }
+}
+
+.arch-site-plan {
+    animation: archSiteDrift 12s ease-in-out infinite;
+    transform-origin: center;
+}
+
+/* Hide heavy architectural decorations on mobile to keep it clean */
+@media (max-width: 900px) {
+    .arch-title-block,
+    .arch-compass,
+    .arch-scale-bar,
+    .arch-site-plan {
+        display: none;
+    }
+}
+
+@media (max-width: 600px) {
+    .arch-elevation { opacity: 0.04 !important; }
+    .arch-floor-plan { opacity: 0.06 !important; }
+}
+
+/* ============================================
    Sections
    ============================================ */
+
+/* Dashboard + invoice containers: position relative so the
+   🏛️ architectural background SVG fills the whole area */
+.dashboard,
+.invoice-view-container,
+.auth-container {
+    position: relative;
+}
+
+.dashboard > .hero-arch-bg,
+.invoice-view-container > .hero-arch-bg,
+.auth-container > .hero-arch-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0;
+    animation: archBgFadeIn 1.6s ease-out 0.25s forwards;
+}
+
+/* All real content sits above the architectural overlay */
+.dashboard > *:not(.hero-arch-bg),
+.invoice-view-container > *:not(.hero-arch-bg),
+.auth-container > *:not(.hero-arch-bg) {
+    position: relative;
+    z-index: 1;
+}
 
 .section {
     padding: 6rem 2rem;
@@ -673,6 +776,59 @@ main {
     color: var(--color-gray);
     max-width: 600px;
     margin: 0 auto;
+}
+
+/* 🏛️ Architectural background for the Services section */
+.section.services-section,
+.section:has(.services-grid) {
+    position: relative;
+    background:
+        radial-gradient(ellipse 700px 500px at 90% 10%, rgba(201, 169, 98, 0.10) 0%, transparent 65%),
+        radial-gradient(ellipse 600px 500px at 10% 90%, rgba(201, 169, 98, 0.07) 0%, transparent 65%),
+        linear-gradient(180deg, var(--color-cream) 0%, #fbf8f1 50%, var(--color-cream) 100%);
+    overflow: hidden;
+}
+
+/* Architectural corner registration marks (services section) */
+.section.services-section::before,
+.section:has(.services-grid)::before {
+    content: '';
+    position: absolute;
+    inset: 2.5rem;
+    pointer-events: none;
+    background:
+        /* Top-left L */
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) top left / 56px 1px no-repeat,
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) top left / 1px 56px no-repeat,
+        /* Top-right L (mirrored) */
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) top right / 56px 1px no-repeat,
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) top right / 1px 56px no-repeat,
+        /* Bottom-left L (mirrored) */
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) bottom left / 56px 1px no-repeat,
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) bottom left / 1px 56px no-repeat,
+        /* Bottom-right L */
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) bottom right / 56px 1px no-repeat,
+        linear-gradient(rgba(201, 169, 98, 0.20), rgba(201, 169, 98, 0.20)) bottom right / 1px 56px no-repeat;
+}
+
+/* Subtle dotted architectural grid for the services section */
+.section.services-section::after,
+.section:has(.services-grid)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(circle, rgba(166, 135, 73, 0.06) 1px, transparent 1.3px);
+    background-size: 30px 30px;
+    opacity: 0.85;
+    mask-image: linear-gradient(to bottom, black 0%, black 70%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 0%, black 70%, transparent 100%);
+}
+
+.section.services-section > *,
+.section:has(.services-grid) > * {
+    position: relative;
+    z-index: 1;
 }
 
 /* ============================================
@@ -2033,6 +2189,46 @@ main {
     overflow: hidden;
 }
 
+/* 🏛️ Architectural blueprint overlay for the works gallery (dark) */
+.works-section::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+        /* Fine gold grid */
+        linear-gradient(rgba(201, 169, 98, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(201, 169, 98, 0.045) 1px, transparent 1px),
+        /* Heavier major grid every 5 lines */
+        linear-gradient(rgba(201, 169, 98, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(201, 169, 98, 0.08) 1px, transparent 1px);
+    background-size: 40px 40px, 40px 40px, 200px 200px, 200px 200px;
+    background-position: 0 0, 0 0, 0 0, 0 0;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+}
+
+.works-section::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+        /* Soft golden glow upper-left */
+        radial-gradient(ellipse 600px 400px at 15% 20%, rgba(201, 169, 98, 0.10) 0%, transparent 70%),
+        /* Soft golden glow bottom-right */
+        radial-gradient(ellipse 500px 400px at 85% 85%, rgba(201, 169, 98, 0.08) 0%, transparent 70%),
+        /* Diagonal blueprint guide */
+        linear-gradient(135deg, transparent 40%, rgba(201, 169, 98, 0.04) 50%, transparent 60%);
+}
+
+.works-section > * {
+    position: relative;
+    z-index: 1;
+}
+
 .works-section .section-header {
     color: var(--color-white);
     padding: 0 2rem 1.6rem;
@@ -2761,4 +2957,472 @@ main {
     box-shadow: 0 0 0 3px rgba(201, 169, 98, 0.15);
     outline: none;
     background: #fff;
+}
+
+/* ============================================
+   Quiet Luxury Refinements (v3.26)
+   Subtle, tasteful improvements across all pages
+   ============================================ */
+
+/* 1. Section Header — decorative gold double underline */
+.section-header {
+    position: relative;
+}
+
+.section-header::after {
+    content: '';
+    display: block;
+    width: 64px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-gold) 50%, transparent);
+    margin: 1.4rem auto 0;
+    opacity: 0.65;
+}
+
+/* Works section (dark) gets a brighter variant */
+.works-section .section-header::after {
+    background: linear-gradient(90deg, transparent, var(--color-gold-light) 50%, transparent);
+    opacity: 0.85;
+}
+
+/* 2. Service Cards — number badge + refined hover */
+.service-card {
+    position: relative;
+    overflow: hidden;
+}
+
+.service-card::after {
+    content: '';
+    position: absolute;
+    top: 1.5rem;
+    left: 1.5rem;
+    width: 30px;
+    height: 1px;
+    background: linear-gradient(90deg, var(--color-gold-dark), transparent);
+    opacity: 0.4;
+    transition: var(--transition);
+}
+
+.service-card:hover::after {
+    width: 64px;
+    opacity: 0.8;
+}
+
+.service-card .service-icon {
+    position: relative;
+    transition: var(--transition);
+}
+
+.service-card:hover .service-icon {
+    transform: rotate(-5deg) scale(1.06);
+    box-shadow: 0 8px 22px rgba(201, 169, 98, 0.18);
+}
+
+.service-card h3 {
+    position: relative;
+    display: inline-block;
+}
+
+.service-card h3::before {
+    content: '';
+    position: absolute;
+    bottom: -3px;
+    right: 0;
+    width: 0;
+    height: 1px;
+    background: linear-gradient(90deg, var(--color-gold-dark), transparent);
+    transition: var(--transition);
+}
+
+.service-card:hover h3::before {
+    width: 100%;
+}
+
+/* 3. Stat Cards — refined inner glow + gold corner */
+.stat-card {
+    background: linear-gradient(180deg, #ffffff 0%, #fdfbf7 100%);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02), 0 2px 8px rgba(26, 26, 26, 0.04);
+    border-color: rgba(229, 224, 216, 0.6);
+}
+
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--color-gold), transparent);
+    opacity: 0;
+    transition: var(--transition);
+    border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+}
+
+.stat-card:hover::before {
+    width: 100%;
+    opacity: 1;
+}
+
+.stat-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 30px rgba(26, 26, 26, 0.10), 0 0 0 1px rgba(201, 169, 98, 0.18);
+}
+
+.stat-icon {
+    transition: var(--transition);
+}
+
+.stat-card:hover .stat-icon {
+    transform: scale(1.08) rotate(-3deg);
+}
+
+/* 4. Dashboard Section — corner gold accent + lift */
+.dashboard-section {
+    background: linear-gradient(180deg, #ffffff 0%, #fdfbf7 100%);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02), 0 2px 10px rgba(26, 26, 26, 0.05);
+    position: relative;
+    overflow: hidden;
+    transition: var(--transition);
+}
+
+.dashboard-section::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 60px;
+    height: 60px;
+    background:
+        linear-gradient(135deg, transparent 50%, rgba(201, 169, 98, 0.10) 50%);
+    pointer-events: none;
+    transition: var(--transition);
+}
+
+.dashboard-section:hover::before {
+    width: 100px;
+    height: 100px;
+    background:
+        linear-gradient(135deg, transparent 50%, rgba(201, 169, 98, 0.14) 50%);
+}
+
+/* Clickable dashboard sections */
+.dashboard-section[onclick] {
+    cursor: pointer;
+}
+
+.dashboard-section[onclick]:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 14px 40px rgba(26, 26, 26, 0.10);
+    border-color: rgba(201, 169, 98, 0.32);
+}
+
+/* 5. Page Header — decorative gold underline */
+.page-title h1 {
+    position: relative;
+    display: inline-block;
+    padding-bottom: 0.6rem;
+}
+
+.page-title h1::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 60px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--color-gold-dark), var(--color-gold));
+    border-radius: 2px;
+}
+
+/* 6. Button shine — sweep on hover */
+.btn {
+    overflow: hidden;
+    isolation: isolate;
+}
+
+.btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -120%;
+    width: 80%;
+    height: 100%;
+    background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.18) 50%, transparent 70%);
+    transform: skewX(-22deg);
+    transition: left 0.85s cubic-bezier(.2,.8,.2,1);
+    z-index: 0;
+    pointer-events: none;
+}
+
+.btn:hover::before {
+    left: 130%;
+}
+
+.btn > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* 7. Tables — gold left-border on row hover */
+.invoices-table tbody tr,
+.craftsmen-table tbody tr {
+    position: relative;
+}
+
+.invoices-table tbody tr::before,
+.craftsmen-table tbody tr::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, var(--color-gold), var(--color-gold-dark));
+    opacity: 0;
+    transition: opacity 0.25s ease;
+}
+
+.invoices-table tbody tr:hover::before,
+.craftsmen-table tbody tr:hover::before {
+    opacity: 1;
+}
+
+/* 8. Search bar — refined focus */
+.search-bar {
+    background: var(--color-white);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+}
+
+.search-bar:hover {
+    border-color: rgba(201, 169, 98, 0.4);
+}
+
+/* 9. Footer — subtle gold rule at top */
+.footer {
+    position: relative;
+}
+
+.footer::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 220px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-gold) 50%, transparent);
+    opacity: 0.45;
+}
+
+.footer-brand img {
+    transition: var(--transition);
+}
+
+.footer-brand:hover img {
+    transform: scale(1.03);
+}
+
+.footer-contact p {
+    transition: var(--transition);
+}
+
+.footer-contact p:hover {
+    color: var(--color-gold-light);
+}
+
+/* 10. Empty State — softer, more elegant */
+.empty-state {
+    padding: 5rem 2rem;
+}
+
+.empty-state-icon {
+    background: linear-gradient(135deg, rgba(201, 169, 98, 0.10), rgba(201, 169, 98, 0.02));
+    border: 1px solid rgba(201, 169, 98, 0.18);
+    color: var(--color-gold-dark);
+    width: 96px;
+    height: 96px;
+    font-size: 2.4rem;
+}
+
+/* 11. Hero — subtle floating animation + refined badge */
+.hero-badge {
+    position: relative;
+    overflow: hidden;
+}
+
+.hero-badge::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+    transform: translateX(-100%);
+    animation: badgeShimmer 4s ease-in-out infinite;
+}
+
+@keyframes badgeShimmer {
+    0%, 60% { transform: translateX(-100%); }
+    100%    { transform: translateX(100%); }
+}
+
+.floating-card {
+    backdrop-filter: blur(8px) saturate(1.05);
+    -webkit-backdrop-filter: blur(8px) saturate(1.05);
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(201, 169, 98, 0.18);
+}
+
+/* 12. Scroll-reveal utility (used by app.js if it adds .reveal) */
+.reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.7s ease-out, transform 0.7s ease-out;
+}
+
+.reveal.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* 13. Cards get soft inner gold border on focus within (for form sections) */
+.dashboard-section:focus-within {
+    border-color: rgba(201, 169, 98, 0.32);
+    box-shadow: 0 0 0 3px rgba(201, 169, 98, 0.10), 0 6px 18px rgba(26, 26, 26, 0.06);
+}
+
+/* 14. Form inputs — subtle inner shadow for depth */
+.form-input,
+.form-select,
+.form-textarea {
+    background: linear-gradient(180deg, #ffffff 0%, #fdfbf7 100%);
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
+}
+
+.form-input:hover:not(:focus),
+.form-select:hover:not(:focus),
+.form-textarea:hover:not(:focus) {
+    border-color: rgba(201, 169, 98, 0.45);
+}
+
+/* 15. Badges — refined dot pulse on success */
+.badge-success {
+    position: relative;
+}
+
+.badge-success::after {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #10b981;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+    animation: badgePulse 2.4s ease-in-out infinite;
+}
+
+.badge-success::before {
+    position: relative;
+    z-index: 1;
+}
+
+@keyframes badgePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
+    50%      { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
+}
+
+/* 16. Amount cards — refined elevation */
+.amount-card {
+    background: linear-gradient(180deg, #ffffff 0%, #fdfbf7 100%);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02), 0 2px 8px rgba(26, 26, 26, 0.04);
+}
+
+.amount-card:hover {
+    box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+    transform: translateY(-3px);
+}
+
+.amount-card.remaining {
+    background: linear-gradient(135deg, rgba(201, 169, 98, 0.12) 0%, rgba(201, 169, 98, 0.03) 100%);
+}
+
+/* 17. Contact section — gentle radial gold behind text */
+.contact-text h2 .accent {
+    background: linear-gradient(135deg, var(--color-gold-light) 0%, var(--color-gold) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.contact-item {
+    position: relative;
+    overflow: hidden;
+}
+
+.contact-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 3px;
+    height: 100%;
+    background: linear-gradient(180deg, var(--color-gold), var(--color-gold-dark));
+    transform: scaleY(0);
+    transform-origin: top;
+    transition: transform 0.35s ease;
+}
+
+.contact-item:hover::before {
+    transform: scaleY(1);
+}
+
+/* 18. Navbar link — refined gold underline */
+.nav-link::after {
+    height: 1.5px;
+    border-radius: 1px;
+}
+
+/* 19. Auth card — quiet top gold hairline */
+.auth-card {
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--color-gold) 50%, transparent);
+}
+
+/* 20. Hover lift utility for clickable cards */
+.lift-on-hover {
+    transition: var(--transition);
+}
+
+.lift-on-hover:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 14px 36px rgba(26, 26, 26, 0.10);
+}
+
+/* Mobile: keep refinements light */
+@media (max-width: 768px) {
+    .section-header::after {
+        width: 44px;
+    }
+    .page-title h1::after {
+        width: 44px;
+    }
+    .dashboard-section::before {
+        width: 40px;
+        height: 40px;
+    }
+    .footer::before {
+        width: 140px;
+    }
 }
