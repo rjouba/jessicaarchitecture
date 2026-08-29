@@ -1255,7 +1255,7 @@ function getAllProfessions() {
 }
 
 function getAllProfessionsRaw() {
-    return safeGet(STORAGE_KEYS.PROFESSIONS, null);
+    return safeGet(STORAGE_KEYS.PROFESSIONS, []);
 }
 
 function _normalizeAndReturnProfessions(list) {
@@ -1613,16 +1613,373 @@ function renderCurrentRoute() {
         console.error('Render error:', e);
         app.innerHTML = `<div class="dashboard"><p>حدث خطأ في تحميل الصفحة. يرجى المحاولة مرة أخرى.</p></div>`;
     }
+
+    // ponytail: gentle scroll-reveal for selected sections (after every render)
+    initScrollReveal();
+}
+
+// ============================================
+// Scroll Reveal (Quiet Luxury micro-interaction)
+// Adds .reveal to large sections, then .is-visible on intersection
+// Uses requestAnimationFrame + IntersectionObserver for buttery performance
+// ============================================
+let _revealObserver = null;
+function initScrollReveal() {
+    if (typeof IntersectionObserver === 'undefined') return;
+
+    if (!_revealObserver) {
+        _revealObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('is-visible');
+                    _revealObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+    }
+
+    requestAnimationFrame(() => {
+        const targets = document.querySelectorAll(
+            '.section, .service-card, .stat-card, .dashboard-section, .contact-card, .amount-card, .works-carousel, .page-header, .admin-banner, .invoice-wrapper'
+        );
+        targets.forEach((el, idx) => {
+            // Skip elements already visible (above the fold) for snappier first paint
+            const rect = el.getBoundingClientRect();
+            if (rect.top < window.innerHeight - 50) {
+                el.classList.add('is-visible');
+                return;
+            }
+            if (!el.classList.contains('reveal')) {
+                el.classList.add('reveal');
+                // Subtle stagger for sibling cards
+                el.style.transitionDelay = `${Math.min(idx * 40, 200)}ms`;
+                _revealObserver.observe(el);
+            }
+        });
+    });
 }
 
 // ============================================
 // HOME PAGE
 // ============================================
+// 🏛️ Shared Architectural Background SVG
+// Used across all pages for the luxury "blueprint" feel
+// variant: 'default' | 'minimal' | 'admin' | 'invoice' | 'worker' | 'profession'
+// ============================================
+function getArchBackgroundSVG(variant = 'default') {
+    // Different visual emphasis per page
+    const showFull = variant !== 'minimal';
+    const showFloorPlan = variant === 'default' || variant === 'invoice' || variant === 'worker' || variant === 'admin';
+    const showElevation = variant === 'default' || variant === 'invoice' || variant === 'admin';
+    const showSitePlan = showFull;
+    const showCompass = showFull;
+    const showTitleBlock = showFull;
+    const showScaleBar = showFull;
+    const showDraft = variant === 'default';
+    const showTree = variant === 'default' || variant === 'admin';
+
+    return `
+        <svg class="hero-arch-bg arch-variant-${variant}" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+                <pattern id="archHatch45" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                    <line x1="0" y1="0" x2="0" y2="6" stroke="#c9a962" stroke-width="0.7"/>
+                </pattern>
+                <pattern id="archHatch135" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(-45)">
+                    <line x1="0" y1="0" x2="0" y2="6" stroke="#c9a962" stroke-width="0.7"/>
+                </pattern>
+                <pattern id="archCross" patternUnits="userSpaceOnUse" width="14" height="14">
+                    <line x1="0" y1="7" x2="14" y2="7" stroke="#c9a962" stroke-width="0.4" opacity="0.5"/>
+                    <line x1="7" y1="0" x2="7" y2="14" stroke="#c9a962" stroke-width="0.4" opacity="0.5"/>
+                </pattern>
+                <linearGradient id="archFade" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#c9a962" stop-opacity="0.15"/>
+                    <stop offset="100%" stop-color="#c9a962" stop-opacity="0"/>
+                </linearGradient>
+            </defs>
+
+            ${showFull ? `
+            <!-- Subtle cross-grid overlay -->
+            <rect x="0" y="0" width="1600" height="900" fill="url(#archCross)" opacity="0.4"/>
+            ` : ''}
+
+            ${showSitePlan ? `
+            <!-- 1) 🏞️ SITE PLAN (top-right) -->
+            <g class="arch-site-plan" opacity="0.28" stroke="#c9a962" fill="none" stroke-width="0.8">
+                <text x="1560" y="62" fill="#c9a962" font-size="9" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="3" text-anchor="end">SITE PLAN</text>
+                <line x1="1420" y1="70" x2="1560" y2="70" stroke-width="0.6"/>
+                <path d="M 1380 200 Q 1440 170 1510 195 Q 1565 215 1570 165" stroke-dasharray="4 3" stroke-width="0.7"/>
+                <text x="1470" y="185" fill="#c9a962" font-size="7" font-family="Cairo" letter-spacing="1.5" opacity="0.85">ACCESS ROAD</text>
+                <rect x="1420" y="100" width="100" height="60" stroke-width="1.5" fill="rgba(201,169,98,0.06)"/>
+                <text x="1470" y="135" fill="#c9a962" font-size="8" font-family="Cairo" text-anchor="middle" letter-spacing="1.5" font-weight="600">${variant === 'invoice' ? 'PROJECT' : variant === 'worker' ? 'TEAM' : variant === 'profession' ? 'TRADES' : 'VILLA'}</text>
+                <g><circle cx="1395" cy="100" r="6" fill="url(#archHatch45)"/><circle cx="1395" cy="100" r="6"/></g>
+                <g><circle cx="1400" cy="220" r="9" fill="url(#archHatch45)"/><circle cx="1400" cy="220" r="9"/><line x1="1391" y1="220" x2="1409" y2="220" stroke-width="0.5"/><line x1="1400" y1="211" x2="1400" y2="229" stroke-width="0.5"/></g>
+                <g><circle cx="1540" cy="100" r="11" fill="url(#archHatch45)"/><circle cx="1540" cy="100" r="11"/><line x1="1529" y1="100" x2="1551" y2="100" stroke-width="0.5"/><line x1="1540" y1="89" x2="1540" y2="111" stroke-width="0.5"/></g>
+                <g><circle cx="1555" cy="195" r="7" fill="url(#archHatch135)"/><circle cx="1555" cy="195" r="7"/></g>
+                <g><circle cx="1545" cy="225" r="5" fill="url(#archHatch45)"/><circle cx="1545" cy="225" r="5"/></g>
+                <path d="M 1370 240 Q 1490 230 1580 245" stroke-dasharray="1.5 3" opacity="0.5"/>
+                <path d="M 1370 255 Q 1490 248 1580 260" stroke-dasharray="1.5 3" opacity="0.4"/>
+                <g transform="translate(1555, 90)">
+                    <path d="M 0 -11 L 4 0 L 0 11 L -4 0 Z" fill="#c9a962" stroke="none"/>
+                    <text x="0" y="-15" fill="#c9a962" font-size="8" font-family="Cairo" text-anchor="middle" font-weight="700">N</text>
+                </g>
+            </g>
+            ` : ''}
+
+            ${showFloorPlan ? `
+            <!-- 2) 🏠 FLOOR PLAN (RIGHT side, behind content) -->
+            <g class="arch-floor-plan" opacity="0.11" stroke="#c9a962" fill="none">
+                <g stroke-width="2.4">
+                    <path d="M 880 290 L 880 620 L 1500 620 L 1500 290 L 1400 290 L 1400 250 L 980 250 L 980 290 Z"/>
+                </g>
+                <g stroke-width="1.3">
+                    <line x1="1180" y1="290" x2="1180" y2="620"/>
+                    <line x1="880" y1="450" x2="1180" y2="450"/>
+                    <line x1="1180" y1="510" x2="1500" y2="510"/>
+                    <line x1="1340" y1="290" x2="1340" y2="510"/>
+                </g>
+                <g stroke-width="0.9">
+                    <line x1="1060" y1="290" x2="1110" y2="290"/>
+                    <path d="M 1110 290 A 50 50 0 0 1 1110 340" fill="none"/>
+                    <line x1="1110" y1="290" x2="1110" y2="340" stroke-dasharray="2 2" opacity="0.6"/>
+                    <line x1="1180" y1="380" x2="1180" y2="430"/>
+                    <path d="M 1180 380 A 50 50 0 0 0 1230 380" fill="none"/>
+                    <line x1="1340" y1="390" x2="1340" y2="440"/>
+                    <path d="M 1340 440 A 50 50 0 0 0 1390 440" fill="none"/>
+                </g>
+                <g stroke-width="0.9">
+                    <rect x="1000" y="247" width="60" height="8" fill="url(#archHatch45)"/>
+                    <line x1="1000" y1="251" x2="1060" y2="251" stroke-width="0.4"/>
+                    <rect x="1220" y="247" width="60" height="8" fill="url(#archHatch45)"/>
+                    <line x1="1220" y1="251" x2="1280" y2="251" stroke-width="0.4"/>
+                    <rect x="877" y="340" width="8" height="50" fill="url(#archHatch135)"/>
+                    <rect x="1495" y="340" width="8" height="50" fill="url(#archHatch135)"/>
+                    <rect x="1410" y="615" width="60" height="8" fill="url(#archHatch45)"/>
+                </g>
+                <g stroke-width="0.7" stroke-dasharray="2.5 1.5" opacity="0.85">
+                    <path d="M 1010 580 L 1040 580"/>
+                    <path d="M 1010 570 L 1050 570"/>
+                    <path d="M 1010 560 L 1060 560"/>
+                    <path d="M 1010 550 L 1070 550"/>
+                    <path d="M 1010 540 L 1080 540"/>
+                    <path d="M 1010 530 L 1090 530"/>
+                    <path d="M 1010 520 L 1100 520"/>
+                    <path d="M 1010 510 L 1110 510"/>
+                    <path d="M 1100 505 L 1113 510 L 1100 515" fill="none"/>
+                    <text x="1060" y="600" fill="#c9a962" font-size="7" font-family="Cairo" text-anchor="middle" letter-spacing="1">UP</text>
+                </g>
+                <g fill="#c9a962" font-family="Cairo, sans-serif" font-size="11" opacity="0.55" letter-spacing="2">
+                    <text x="1020" y="370" text-anchor="middle">LIVING</text>
+                    <text x="1020" y="385" text-anchor="middle" font-size="7" opacity="0.7">صالة</text>
+                    <text x="1020" y="540" text-anchor="middle">KITCHEN</text>
+                    <text x="1020" y="555" text-anchor="middle" font-size="7" opacity="0.7">مطبخ</text>
+                    <text x="1260" y="380" text-anchor="middle">BEDROOM</text>
+                    <text x="1260" y="395" text-anchor="middle" font-size="7" opacity="0.7">غرفة نوم</text>
+                    <text x="1260" y="570" text-anchor="middle">BEDROOM</text>
+                    <text x="1260" y="585" text-anchor="middle" font-size="7" opacity="0.7">غرفة نوم</text>
+                    <text x="1420" y="400" text-anchor="middle">BATH</text>
+                    <text x="1420" y="415" text-anchor="middle" font-size="7" opacity="0.7">حمام</text>
+                </g>
+                <g stroke-width="0.6" opacity="0.7">
+                    <rect x="1375" y="320" width="40" height="20" rx="8"/>
+                    <circle cx="1440" cy="430" r="12"/>
+                    <rect x="1365" y="460" width="50" height="22" rx="4"/>
+                </g>
+                <g stroke-width="0.6" opacity="0.7">
+                    <rect x="1200" y="320" width="100" height="55" rx="2"/>
+                    <rect x="1205" y="325" width="40" height="18" rx="2"/>
+                    <rect x="1255" y="325" width="40" height="18" rx="2"/>
+                </g>
+                <g stroke-width="0.5">
+                    <line x1="880" y1="680" x2="1500" y2="680"/>
+                    <line x1="880" y1="670" x2="880" y2="690"/>
+                    <line x1="980" y1="675" x2="980" y2="685"/>
+                    <line x1="1180" y1="670" x2="1180" y2="690"/>
+                    <line x1="1340" y1="675" x2="1340" y2="685"/>
+                    <line x1="1500" y1="670" x2="1500" y2="690"/>
+                </g>
+                <g fill="#c9a962" font-family="Cairo" font-size="10" opacity="0.85">
+                    <text x="1080" y="700" text-anchor="middle">6.00 m</text>
+                    <text x="1260" y="700" text-anchor="middle">4.00 m</text>
+                    <text x="1420" y="700" text-anchor="middle">2.20 m</text>
+                </g>
+            </g>
+            ` : ''}
+
+            ${showElevation ? `
+            <!-- 3) 🏢 BUILDING ELEVATION (LEFT side) -->
+            <g class="arch-elevation" opacity="0.08" stroke="#c9a962" fill="none" stroke-width="0.7">
+                <path d="M 100 240 L 150 200 L 700 200 L 750 240 L 750 620 L 100 620 Z"/>
+                <line x1="70" y1="620" x2="780" y2="620" stroke-width="1.5"/>
+                <line x1="70" y1="625" x2="780" y2="625" stroke-dasharray="2 2" opacity="0.6"/>
+                <line x1="100" y1="450" x2="750" y2="450" stroke-width="1.1"/>
+                <line x1="100" y1="320" x2="750" y2="320" stroke-width="1.1"/>
+                <g>
+                    <rect x="140" y="490" width="55" height="110"/>
+                    <rect x="210" y="490" width="55" height="110"/>
+                    <rect x="280" y="490" width="55" height="110"/>
+                    <rect x="350" y="490" width="55" height="110"/>
+                    <rect x="420" y="490" width="55" height="110"/>
+                    <rect x="490" y="490" width="55" height="110"/>
+                    <rect x="560" y="490" width="55" height="110"/>
+                    <rect x="630" y="490" width="55" height="110"/>
+                    <line x1="140" y1="545" x2="685" y2="545" stroke-dasharray="1.5 1.5" opacity="0.7"/>
+                </g>
+                <rect x="390" y="530" width="70" height="90" fill="rgba(201,169,98,0.18)" stroke-width="1"/>
+                <line x1="425" y1="530" x2="425" y2="620"/>
+                <g>
+                    <rect x="140" y="345" width="55" height="85"/>
+                    <rect x="210" y="345" width="55" height="85"/>
+                    <rect x="280" y="345" width="55" height="85"/>
+                    <rect x="350" y="345" width="55" height="85"/>
+                    <rect x="420" y="345" width="55" height="85"/>
+                    <rect x="490" y="345" width="55" height="85"/>
+                    <rect x="560" y="345" width="55" height="85"/>
+                    <rect x="630" y="345" width="55" height="85"/>
+                    <line x1="140" y1="385" x2="685" y2="385" stroke-dasharray="1.5 1.5" opacity="0.6"/>
+                </g>
+                <g>
+                    <rect x="200" y="240" width="60" height="55"/>
+                    <rect x="280" y="240" width="60" height="55"/>
+                    <rect x="360" y="240" width="60" height="55"/>
+                    <rect x="440" y="240" width="60" height="55"/>
+                    <rect x="520" y="240" width="60" height="55"/>
+                    <rect x="600" y="240" width="60" height="55"/>
+                </g>
+                <g opacity="0.6" stroke-width="0.5">
+                    <line x1="140" y1="430" x2="685" y2="430"/>
+                    <line x1="140" y1="436" x2="685" y2="436"/>
+                </g>
+            </g>
+            ` : ''}
+
+            ${showCompass ? `
+            <!-- 4) 🧭 COMPASS ROSE -->
+            <g class="arch-compass" transform="translate(110, 130)" opacity="0.55">
+                <circle cx="0" cy="0" r="58" fill="none" stroke="#c9a962" stroke-width="0.8"/>
+                <circle cx="0" cy="0" r="46" fill="none" stroke="#c9a962" stroke-width="0.5" stroke-dasharray="2 2"/>
+                <circle cx="0" cy="0" r="32" fill="none" stroke="#c9a962" stroke-width="0.5"/>
+                <circle cx="0" cy="0" r="2.5" fill="#c9a962"/>
+                <g stroke="#c9a962" stroke-width="0.6">
+                    <line x1="0" y1="-58" x2="0" y2="-52"/>
+                    <line x1="0" y1="58" x2="0" y2="52"/>
+                    <line x1="-58" y1="0" x2="-52" y2="0"/>
+                    <line x1="58" y1="0" x2="52" y2="0"/>
+                    <line x1="41" y1="-41" x2="37" y2="-37"/>
+                    <line x1="-41" y1="-41" x2="-37" y2="-37"/>
+                    <line x1="41" y1="41" x2="37" y2="37"/>
+                    <line x1="-41" y1="41" x2="-37" y2="37"/>
+                </g>
+                <g class="arch-compass-needle">
+                    <path d="M 0 -52 L 8 0 L 0 8 L -8 0 Z" fill="#c9a962" stroke="none"/>
+                    <path d="M 0 52 L 8 0 L 0 -8 L -8 0 Z" fill="none" stroke="#c9a962" stroke-width="0.6"/>
+                </g>
+                <text x="0" y="-70" fill="#c9a962" font-size="13" font-family="Cairo, sans-serif" font-weight="700" text-anchor="middle">N</text>
+                <text x="0" y="82" fill="#c9a962" font-size="10" font-family="Cairo, sans-serif" text-anchor="middle">S</text>
+                <text x="72" y="4" fill="#c9a962" font-size="10" font-family="Cairo, sans-serif" text-anchor="middle">E</text>
+                <text x="-72" y="4" fill="#c9a962" font-size="10" font-family="Cairo, sans-serif" text-anchor="middle">W</text>
+            </g>
+            ` : ''}
+
+            ${showScaleBar ? `
+            <!-- 5) 📐 SCALE BAR -->
+            <g class="arch-scale-bar" transform="translate(1340, 838)" opacity="0.55">
+                <text x="0" y="-8" fill="#c9a962" font-size="8" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="3">SCALE 1 : 50</text>
+                <line x1="0" y1="0" x2="200" y2="0" stroke="#c9a962" stroke-width="1.2"/>
+                <line x1="0" y1="-5" x2="0" y2="5" stroke="#c9a962" stroke-width="1.2"/>
+                <line x1="40" y1="-3" x2="40" y2="3" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="80" y1="-5" x2="80" y2="5" stroke="#c9a962" stroke-width="1.2"/>
+                <line x1="120" y1="-3" x2="120" y2="3" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="160" y1="-3" x2="160" y2="3" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="200" y1="-5" x2="200" y2="5" stroke="#c9a962" stroke-width="1.2"/>
+                <g fill="#c9a962" font-family="Cairo" font-size="8" text-anchor="middle">
+                    <text x="0" y="16">0</text>
+                    <text x="40" y="16">1</text>
+                    <text x="80" y="16">2</text>
+                    <text x="120" y="16">3</text>
+                    <text x="160" y="16">4</text>
+                    <text x="200" y="16">5 m</text>
+                </g>
+            </g>
+            ` : ''}
+
+            ${showTitleBlock ? `
+            <!-- 6) 📋 TITLE BLOCK -->
+            <g class="arch-title-block" transform="translate(30, 770)" opacity="0.55">
+                <rect x="0" y="0" width="495" height="115" fill="none" stroke="#c9a962" stroke-width="1.5"/>
+                <line x1="0" y1="32" x2="495" y2="32" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="0" y1="74" x2="495" y2="74" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="210" y1="0" x2="210" y2="115" stroke="#c9a962" stroke-width="0.8"/>
+                <line x1="350" y1="0" x2="350" y2="115" stroke="#c9a962" stroke-width="0.8"/>
+                <text x="10" y="13" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">PROJECT</text>
+                <text x="10" y="27" fill="#c9a962" font-size="15" font-family="'Playfair Display', serif" font-weight="700" letter-spacing="1">JESSICA KASSAB</text>
+                <text x="220" y="13" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">PAGE</text>
+                <text x="220" y="27" fill="#c9a962" font-size="12" font-family="Cairo, sans-serif">${variant.toUpperCase()}</text>
+                <text x="360" y="13" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">SCALE</text>
+                <text x="360" y="27" fill="#c9a962" font-size="13" font-family="Cairo, sans-serif" font-weight="600">1 : 50</text>
+                <text x="10" y="50" fill="#c9a962" font-size="10" font-family="Cairo, sans-serif" font-weight="500">عمارة وتصميم داخلي</text>
+                <text x="10" y="64" fill="#c9a962" font-size="8" font-family="Cairo, sans-serif" opacity="0.85" letter-spacing="0.5">Architecture &amp; Interior Design</text>
+                <text x="220" y="50" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">REVISION</text>
+                <text x="220" y="64" fill="#c9a962" font-size="11" font-family="Cairo, sans-serif" font-weight="600">v = 3.24</text>
+                <text x="360" y="50" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">DATE</text>
+                <text x="360" y="64" fill="#c9a962" font-size="11" font-family="Cairo, sans-serif" font-weight="600">2026 — 08</text>
+                <text x="10" y="88" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">DRAWN BY</text>
+                <text x="10" y="105" fill="#c9a962" font-size="11" font-family="Cairo, sans-serif">JESSICA KASSAB</text>
+                <text x="220" y="88" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">CHECKED</text>
+                <text x="220" y="105" fill="#c9a962" font-size="11" font-family="Cairo, sans-serif">J. K.</text>
+                <text x="360" y="88" fill="#c9a962" font-size="7.5" font-family="Cairo, sans-serif" font-weight="700" letter-spacing="2.5">SHEET</text>
+                <text x="360" y="105" fill="#c9a962" font-size="11" font-family="Cairo, sans-serif">A — 001 / 01</text>
+            </g>
+            ` : ''}
+
+            ${showDraft ? `
+            <!-- 7) ✏️ DRAFT -->
+            <g class="arch-draft" opacity="0.18" stroke="#c9a962" fill="none">
+                <line x1="780" y1="60" x2="820" y2="100" stroke-width="0.6" stroke-dasharray="3 3"/>
+                <text x="800" y="55" fill="#c9a962" font-size="7" font-family="Cairo" text-anchor="middle" letter-spacing="1.5" transform="rotate(45 800 55)">DRAFT</text>
+            </g>
+            ` : ''}
+
+            ${showTree ? `
+            <!-- 8) 🌳 Tree -->
+            <g class="arch-tree" opacity="0.10" stroke="#c9a962" fill="none" stroke-width="0.6">
+                <g transform="translate(150, 700)">
+                    <circle cx="0" cy="0" r="22" fill="url(#archHatch45)"/>
+                    <circle cx="0" cy="0" r="22"/>
+                    <line x1="-22" y1="0" x2="22" y2="0" stroke-width="0.4"/>
+                    <line x1="0" y1="-22" x2="0" y2="22" stroke-width="0.4"/>
+                </g>
+            </g>
+            ` : ''}
+
+            ${variant === 'admin' ? `
+            <!-- 9) 🛠️ Extra admin: dashboard graphs (background bars) -->
+            <g class="arch-dashboard" opacity="0.10" stroke="#c9a962" fill="none" stroke-width="0.5">
+                <text x="800" y="450" fill="#c9a962" font-size="9" font-family="Cairo" font-weight="700" letter-spacing="3" text-anchor="middle" opacity="0.7">— DASHBOARD —</text>
+                <g transform="translate(720, 470)">
+                    <line x1="0" y1="0" x2="160" y2="0" stroke-width="0.5"/>
+                    <line x1="0" y1="0" x2="0" y2="-50" stroke-width="0.5"/>
+                    <rect x="10" y="-30" width="15" height="30" fill="url(#archHatch45)"/>
+                    <rect x="35" y="-45" width="15" height="45" fill="url(#archHatch45)"/>
+                    <rect x="60" y="-20" width="15" height="20" fill="url(#archHatch45)"/>
+                    <rect x="85" y="-38" width="15" height="38" fill="url(#archHatch45)"/>
+                    <rect x="110" y="-25" width="15" height="25" fill="url(#archHatch45)"/>
+                    <rect x="135" y="-42" width="15" height="42" fill="url(#archHatch45)"/>
+                    <line x1="0" y1="-15" x2="160" y2="-15" stroke-dasharray="2 3" opacity="0.5"/>
+                    <line x1="0" y1="-30" x2="160" y2="-30" stroke-dasharray="2 3" opacity="0.5"/>
+                </g>
+            </g>
+            ` : ''}
+        </svg>
+    `;
+}
 
 function renderHomePage() {
     return `
         <!-- Hero Section -->
         <section class="hero">
+            <!-- 🏛️ Architectural Blueprint Background -->
+            ${getArchBackgroundSVG('default')}
+
             <div class="hero-container">
                 <div class="hero-content">
                     <div class="hero-badge">
@@ -1737,7 +2094,7 @@ function renderHomePage() {
         </section>
 
         <!-- Services Section -->
-        <section class="section">
+        <section class="section services-section">
             <div class="section-header">
                 <span class="section-label">خدماتنا</span>
                 <h2 class="section-title">ما نقدمه لكم</h2>
@@ -1993,6 +2350,7 @@ function renderAdminDashboardHome() {
 
     return `
         <div class="dashboard">
+            ${getArchBackgroundSVG('admin')}
             <div class="admin-banner">
                 <div class="admin-banner-info">
                     <div class="admin-banner-icon"><i class="fas fa-user-shield"></i></div>
@@ -2278,6 +2636,7 @@ function renderWorkersDashboard() {
 
     return `
         <div class="dashboard">
+            ${getArchBackgroundSVG('worker')}
             <div class="admin-banner">
                 <div class="admin-banner-info">
                     <div class="admin-banner-icon"><i class="fas fa-user-shield"></i></div>
@@ -2631,6 +2990,7 @@ function renderWorkerDetailView(workerId) {
 
     return `
         <div class="dashboard">
+            ${getArchBackgroundSVG('worker')}
             <div class="admin-banner">
                 <div class="admin-banner-info">
                     <div class="admin-banner-icon"><i class="fas fa-user-shield"></i></div>
@@ -2900,6 +3260,7 @@ function renderProfessionsDashboard() {
 
     return `
     <div class="dashboard">
+        ${getArchBackgroundSVG('profession')}
         <div class="dashboard-header">
             <div class="dashboard-header-inner">
                 <div style="display:flex; align-items:center; gap:1rem;">
@@ -3370,6 +3731,7 @@ function renderInvoicesDashboard() {
 
     return `
         <div class="dashboard">
+            ${getArchBackgroundSVG('invoice')}
             <div class="admin-banner">
                 <div class="admin-banner-info">
                     <div class="admin-banner-icon"><i class="fas fa-user-shield"></i></div>
@@ -3593,6 +3955,7 @@ function renderInvoiceView(invoiceId) {
 
     return `
         <div class="invoice-view-container" id="invoicePageRoot">
+            ${getArchBackgroundSVG('invoice')}
             ${isAdmin ? `
                 <div class="admin-banner">
                     <div class="admin-banner-info">
